@@ -11,7 +11,7 @@ test("session file -> title for every Claude Code status", () => {
     ["busy", "VCC-transfer ●"],
     ["waiting", "VCC-transfer ?"],
     ["idle", "VCC-transfer ○"],
-    ["shell", "VCC-transfer ○"],
+    ["shell", "VCC-transfer ●"],
   ];
   for (const [status, title] of cases) {
     const s = parseSessionFile(JSON.stringify({ ...base, status }), "7.json", noLog);

@@ -4,9 +4,9 @@ When several Claude Code sessions run in VS Code integrated terminals, this
 extension shows each session's name and state in its terminal tab:
 
 ```text
-VCC-transfer ●     working: Claude is processing a turn or running tools
+VCC-transfer ●     working: Claude is processing a turn, running tools, or waiting on a shell command it started
 ADKG ?             waiting: Claude is blocked on you (permission prompt, question, dialog)
-MYCN-analysis ○    idle: the turn is complete
+MYCN-analysis ○    idle: the turn is complete and nothing Claude started is still running
 ```
 
 That is all it does. It has no sidebar, notifications, network access or
@@ -53,7 +53,8 @@ the session name and status, set:
 - **State.** Claude Code maintains `<config dir>/sessions/<pid>.json`. The file
   holds the session id, the name (already resolved as `/rename` over `--name`
   over the generated name), and a status of `busy`, `waiting`, `idle` or
-  `shell`. Status maps as `busy` → ●, `waiting` → ?, `idle`/`shell` → ○.
+  `shell`. Status maps as `busy`/`shell` → ●, `waiting` → ?, `idle` → ○ (`shell`:
+  the turn ended but a shell command Claude started is still running).
   The extension reads every `~/.claude/sessions` and `~/.claude-*/sessions`
   directory and `$CLAUDE_CONFIG_DIR/sessions`. Directories that are the same
   on disk are read once. It needs no hooks.
