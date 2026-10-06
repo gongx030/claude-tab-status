@@ -40,7 +40,10 @@ export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
 
 An exported variable reaches every launcher that inherits the shell
 environment, including wrappers such as `claude_build` and `claude_codex`.
-Running sessions read it only at startup, so restart them (`claude -r <name>`).
+Running sessions read it only at startup, so restart them (`claude -r <name>`)
+from a terminal that has it. Until then the extension wins the tab back on its
+next reconcile (every 3 s), but a busy session's tab flickers between the two
+titles.
 
 Keep `terminal.integrated.tabs.allowAgentCliTitle` at its default, `true`.
 
@@ -75,8 +78,10 @@ the session name and status, set:
   a program-set title instead of the process name.
 - **Updates.** A file watch on the session directories, terminal
   open/close/focus events, and a `ps` reconcile every 3 s
-  (`claudeTabStatus.refreshIntervalMs`). A title is written only when it
-  changes.
+  (`claudeTabStatus.refreshIntervalMs`). Event-driven updates write a title
+  only when it changes; each reconcile tick also rewrites unchanged titles (a
+  write under 100 bytes per tab), in case another program replaced them. A
+  terminal whose last write failed is skipped for 10 ticks.
 
 Diagnostics are written to the **Claude Tab Status** output channel.
 

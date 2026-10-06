@@ -15,13 +15,26 @@ interface Rendered {
 
 export type TitleWriter = (tty: string, title: string) => void;
 
+/** Re-assert passes to skip a tty after a failed write (10 x 3 s by default). */
+const REASSERT_BACKOFF = 10;
+
 /**
- * Last title written to each terminal shell. Writes only on change, so an idle
- * fleet costs no tty traffic. A failed write or reset is not recorded and is
- * therefore retried on the next reconcile.
+ * Last title written to each terminal shell. Writes on change, and on a
+ * re-assert pass rewrites unchanged titles too: another program in the
+ * terminal (Claude Code without CLAUDE_CODE_DISABLE_TERMINAL_TITLE) may have
+ * replaced ours. A failed write or reset is not recorded and is therefore
+ * retried: a changed title on the next reconcile, an unchanged one on a later
+ * re-assert pass after a back-off (see `failing`).
  */
 export class StatusStore {
   private rendered = new Map<number, Rendered>();
+  /**
+   * ttys whose last write failed. A failure usually means the terminal's
+   * output is backed up (EAGAIN or a short write), so re-assert skips the tty
+   * for `REASSERT_BACKOFF` passes instead of writing into a full buffer every
+   * tick. Each distinct failure is logged once, not every tick.
+   */
+  private failing = new Map<string, { msg: string; skip: number }>();
 
   constructor(
     private readonly write: TitleWriter,
@@ -34,8 +47,14 @@ export class StatusStore {
    *   terminal's pts number can be reused by another terminal.
    * @param held Claude pids whose session file exists but was unreadable this
    *   time (e.g. caught mid-write); their titles are kept rather than reset.
+   * @param reassert rewrite titles even when unchanged.
    */
-  update(bindings: Binding[], shellTtys: Map<number, string>, held: Set<number> = new Set()): void {
+  update(
+    bindings: Binding[],
+    shellTtys: Map<number, string>,
+    held: Set<number> = new Set(),
+    reassert = false,
+  ): void {
     const live = new Set<number>();
     for (const b of bindings) {
       const prev = this.rendered.get(b.shellPid);
@@ -50,13 +69,11 @@ export class StatusStore {
       live.add(b.shellPid);
       const session = { ...b.session, status };
       const title = formatTerminalTitle(session);
-      if (prev && prev.title === title && prev.tty === b.tty) {
+      const unchanged = prev !== undefined && prev.title === title && prev.tty === b.tty;
+      if (unchanged && (!reassert || this.backingOff(b.tty))) {
         continue;
       }
-      try {
-        this.write(b.tty, title);
-      } catch (e) {
-        this.log(`title write failed for ${b.tty}: ${(e as Error).message}`);
+      if (!this.tryWrite(b.tty, title, "title write")) {
         continue;
       }
       this.rendered.set(b.shellPid, { tty: b.tty, title, session });
@@ -67,17 +84,42 @@ export class StatusStore {
       if (live.has(shellPid) || (ownsTty && held.has(prev.session.pid))) {
         continue;
       }
-      if (ownsTty) {
-        try {
-          this.write(prev.tty, ""); // empty title: VS Code falls back to its own label
-        } catch (e) {
-          this.log(`title reset failed for ${prev.tty}: ${(e as Error).message}`);
-          continue; // keep the entry so the reset is retried
-        }
+      // Empty title: VS Code falls back to its own label. On failure keep the
+      // entry so the reset is retried.
+      if (ownsTty && !this.tryWrite(prev.tty, "", "title reset")) {
+        continue;
       }
       this.rendered.delete(shellPid);
+      this.failing.delete(prev.tty);
       this.log(`binding lost: shell ${shellPid} (session ${prev.session.sessionId})`);
     }
+  }
+
+  private tryWrite(tty: string, title: string, what: string): boolean {
+    try {
+      this.write(tty, title);
+    } catch (e) {
+      const msg = `${what} failed for ${tty}: ${(e as Error).message}`;
+      if (this.failing.get(tty)?.msg !== msg) {
+        this.log(msg);
+      }
+      this.failing.set(tty, { msg, skip: REASSERT_BACKOFF });
+      return false;
+    }
+    if (this.failing.delete(tty)) {
+      this.log(`writes to ${tty} succeed again`);
+    }
+    return true;
+  }
+
+  /** True while a failing tty's re-assert back-off lasts; counts down one pass per call. */
+  private backingOff(tty: string): boolean {
+    const f = this.failing.get(tty);
+    if (!f || f.skip === 0) {
+      return false;
+    }
+    f.skip--;
+    return true;
   }
 
   /** Every tty a title was written to, for the final reset on shutdown. */

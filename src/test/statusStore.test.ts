@@ -7,7 +7,7 @@ function session(sessionId: string): ClaudeSessionState {
   return { pid: 1, sessionId, name: sessionId, status: "idle", startedAt: 0, updatedAt: 0 };
 }
 
-test("writes on change only, retries failures, resets only a tty its shell still owns", () => {
+test("writes on change (all on re-assert), retries failures, resets only a tty its shell still owns", () => {
   const writes: [string, string][] = [];
   let failNext = false;
   const store = new StatusStore((tty, title) => {
@@ -25,6 +25,18 @@ test("writes on change only, retries failures, resets only a tty its shell still
   store.update([a, b], ttys); // A fails, B written
   store.update([a, b], ttys); // A retried, B unchanged
   assert.deepEqual(writes, [["/dev/pts/2", "B 🟢"], ["/dev/pts/1", "A 🟢"]]);
+
+  // A re-assert pass rewrites unchanged titles (Claude Code may have overwritten them).
+  writes.length = 0;
+  store.update([a, b], ttys, new Set(), true);
+  assert.deepEqual(writes, [["/dev/pts/1", "A 🟢"], ["/dev/pts/2", "B 🟢"]]);
+
+  // A failed re-assert (backed-up tty) backs off: the next pass skips that tty.
+  writes.length = 0;
+  failNext = true;
+  store.update([a, b], ttys, new Set(), true); // A fails, B written
+  store.update([a, b], ttys, new Set(), true); // A skipped, B written
+  assert.deepEqual(writes, [["/dev/pts/2", "B 🟢"], ["/dev/pts/2", "B 🟢"]]);
 
   // Claude in shell 20 exits (shell alive): reset. Terminal 30 closes and a new
   // shell 31 reuses /dev/pts/2: its title must not be overwritten by a reset.

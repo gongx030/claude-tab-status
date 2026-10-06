@@ -64,7 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  /** @param full re-discover session dirs and re-run ps (timer, terminal opened). */
+  /** @param full re-discover session dirs, re-run ps and re-assert titles (timer, terminal opened). */
   async function reconcileOnce(full: boolean): Promise<void> {
     if (!config().get<boolean>("enabled", true)) {
       store.update([], shellTtys(procs)); // resets every title this extension set
@@ -94,7 +94,9 @@ export function activate(context: vscode.ExtensionContext): void {
         log(`Claude pid ${session.pid} is under shell ${shellPid}, which has no recognised tty`);
       }
     }
-    store.update(bindings, shellTtys(procs), unreadable);
+    // Timer ticks re-assert unchanged titles, winning the tab back within one
+    // interval if Claude Code (title not disabled) overwrote it.
+    store.update(bindings, shellTtys(procs), unreadable, full);
   }
 
   function shellTtys(table: ProcTable | undefined): Map<number, string> {
