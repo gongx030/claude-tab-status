@@ -1,0 +1,56 @@
+{
+  "name": "claude-tab-status",
+  "displayName": "Claude Tab Status",
+  "description": "Shows each Claude Code session's name and status (working / waiting / idle) in its VS Code terminal tab.",
+  "version": "0.1.0",
+  "publisher": "gongx030",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gongx030/claude-tab-status.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Claude Tab Status",
+      "properties": {
+        "claudeTabStatus.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write the Claude Code session name and status into the terminal tab title."
+        },
+        "claudeTabStatus.refreshIntervalMs": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1000,
+          "description": "Interval of the process-table reconciliation, in milliseconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test \"out/test/*.test.js\"",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.4.0"
+  }
+}
