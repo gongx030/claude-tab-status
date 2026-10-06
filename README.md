@@ -53,7 +53,8 @@ the session name and status, set:
 - **State.** Claude Code maintains `<config dir>/sessions/<pid>.json`. The file
   holds the session id, the name (already resolved as `/rename` over `--name`
   over the generated name), and a status of `busy`, `waiting`, `idle` or
-  `shell`. Status maps as `busy` → ●, `waiting` → ?, `idle`/`shell` → ○.
+  `shell`. Status maps as `busy`/`shell` → ●, `waiting` → ?, `idle` → ○ (`shell`:
+  the turn ended but a shell command Claude started is still running).
   The extension reads every `~/.claude/sessions` and `~/.claude-*/sessions`
   directory and `$CLAUDE_CONFIG_DIR/sessions`. Directories that are the same
   on disk are read once. It needs no hooks.

@@ -20,17 +20,19 @@ const SYMBOL: Record<ClaudeStatus, string> = {
 
 /**
  * Claude Code's own session-file status (enum in CC 2.1.x: busy, shell, idle,
- * waiting) mapped to the three displayed states. `shell` is CC's "idle while a
- * background shell runs". Unknown values return undefined rather than a guess.
+ * waiting) mapped to the three displayed states. `shell` is CC's "turn ended
+ * but a shell command it started is still running" (e.g. a long pytest moved
+ * to the background); the session is still at work on it, so it shows as
+ * working. Unknown values return undefined rather than a guess.
  */
 export function toStatus(raw: unknown): ClaudeStatus | undefined {
   switch (raw) {
     case "busy":
+    case "shell":
       return "working";
     case "waiting":
       return "waiting";
     case "idle":
-    case "shell":
       return "idle";
     default:
       return undefined;
