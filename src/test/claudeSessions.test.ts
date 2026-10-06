@@ -9,7 +9,7 @@ const base = { pid: 7, sessionId: "abc12345-x", kind: "interactive", name: "VCC-
 test("session file -> title for every Claude Code status", () => {
   const cases: [string, string][] = [
     ["busy", "VCC-transfer ●"],
-    ["waiting", "VCC-transfer ?"],
+    ["waiting", "VCC-transfer 🟠"],
     ["idle", "VCC-transfer ○"],
     ["shell", "VCC-transfer ●"],
   ];
