@@ -40,6 +40,14 @@ Running sessions read it only at startup, so restart them (`claude -r <name>`).
 
 Keep `terminal.integrated.tabs.allowAgentCliTitle` at its default, `true`.
 
+Optional: VS Code appends the terminal's folder after the title when it differs
+from the workspace folder (`${cwdFolder}` in the tab description). To show only
+the session name and status, set:
+
+```json
+"terminal.integrated.tabs.description": "${task}${separator}${local}"
+```
+
 ## How it works
 
 - **State.** Claude Code maintains `<config dir>/sessions/<pid>.json`. The file
