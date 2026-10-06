@@ -5,9 +5,13 @@ extension shows each session's name and state in its terminal tab:
 
 ```text
 VCC-transfer ●     working: Claude is processing a turn, running tools, or waiting on a shell command it started
-ADKG ?             waiting: Claude is blocked on you (permission prompt, question, dialog)
+ADKG 🟠            waiting: Claude is blocked on you (permission prompt, question, dialog)
 MYCN-analysis ○    idle: the turn is complete and nothing Claude started is still running
 ```
+
+The waiting mark is a colour emoji because VS Code offers no way to colour a
+tab the extension did not create: `TerminalOptions.color` applies only at
+creation, and the change-color command acts on the active terminal only.
 
 That is all it does. It has no sidebar, notifications, network access or
 telemetry.
@@ -53,7 +57,7 @@ the session name and status, set:
 - **State.** Claude Code maintains `<config dir>/sessions/<pid>.json`. The file
   holds the session id, the name (already resolved as `/rename` over `--name`
   over the generated name), and a status of `busy`, `waiting`, `idle` or
-  `shell`. Status maps as `busy`/`shell` → ●, `waiting` → ?, `idle` → ○ (`shell`:
+  `shell`. Status maps as `busy`/`shell` → ●, `waiting` → 🟠, `idle` → ○ (`shell`:
   the turn ended but a shell command Claude started is still running).
   The extension reads every `~/.claude/sessions` and `~/.claude-*/sessions`
   directory and `$CLAUDE_CONFIG_DIR/sessions`. Directories that are the same
