@@ -4,9 +4,9 @@ When several Claude Code sessions run in VS Code integrated terminals, this
 extension shows each session's name and state in its terminal tab:
 
 ```text
-VCC-transfer ●     working: Claude is processing a turn or running tools
+VCC-transfer ●     working: Claude is processing a turn, running tools, or waiting on a shell command it started
 ADKG ?             waiting: Claude is blocked on you (permission prompt, question, dialog)
-MYCN-analysis ○    idle: the turn is complete
+MYCN-analysis ○    idle: the turn is complete and nothing Claude started is still running
 ```
 
 That is all it does. It has no sidebar, notifications, network access or
