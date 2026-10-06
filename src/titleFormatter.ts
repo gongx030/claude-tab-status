@@ -5,7 +5,10 @@ export interface ClaudeSessionState {
   pid: number;
   cwd?: string;
   name: string;
-  status: ClaudeStatus;
+  /** undefined: the session file carries a status this version does not know; hold the last title. */
+  status: ClaudeStatus | undefined;
+  /** Epoch ms at which Claude Code wrote the session; used to reject recycled pids. */
+  startedAt: number;
   updatedAt: number;
 }
 
@@ -18,8 +21,7 @@ const SYMBOL: Record<ClaudeStatus, string> = {
 /**
  * Claude Code's own session-file status (enum in CC 2.1.x: busy, shell, idle,
  * waiting) mapped to the three displayed states. `shell` is CC's "idle while a
- * background shell runs". Unknown values return undefined so the caller keeps
- * the last title rather than guessing.
+ * background shell runs". Unknown values return undefined rather than a guess.
  */
 export function toStatus(raw: unknown): ClaudeStatus | undefined {
   switch (raw) {
@@ -42,15 +44,18 @@ export function toStatus(raw: unknown): ClaudeStatus | undefined {
  */
 export function resolveSessionName(meta: { name?: unknown; sessionId: string }): string {
   const name = typeof meta.name === "string" ? stripControl(meta.name).trim() : "";
-  return name || meta.sessionId.slice(0, 8);
+  return name || stripControl(meta.sessionId).slice(0, 8);
 }
 
-export function formatTerminalTitle(session: ClaudeSessionState): string {
+export function formatTerminalTitle(session: ClaudeSessionState & { status: ClaudeStatus }): string {
   return `${session.name} ${SYMBOL[session.status]}`;
 }
 
-// The title is written raw into an OSC sequence on the terminal's tty, so a
-// user-chosen name must never carry ESC/BEL or other C0/C1 controls.
-function stripControl(s: string): string {
+/**
+ * Titles are written raw into an OSC sequence on the terminal's tty, so they
+ * must never carry ESC/BEL or other C0/C1 controls. `writeTitle` applies this
+ * too, as the last line of defence.
+ */
+export function stripControl(s: string): string {
   return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }

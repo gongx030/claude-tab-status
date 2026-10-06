@@ -5,31 +5,52 @@ export interface ProcInfo {
   ppid: number;
   /** Controlling terminal device path, e.g. /dev/pts/3 or /dev/ttys003. */
   tty?: string;
+  /** Process start, epoch ms (second resolution). */
+  startMs?: number;
 }
 
 export type ProcTable = Map<number, ProcInfo>;
 
+const PS_TIMEOUT_MS = 10_000;
+
 /** One `ps` snapshot of the whole process table (same flags on Linux and macOS). */
 export function snapshotProcesses(): Promise<ProcTable> {
   return new Promise((resolve, reject) => {
-    execFile("ps", ["-A", "-o", "pid=,ppid=,tty="], { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
-      if (err) {
-        reject(err);
-      } else {
-        resolve(parsePs(stdout));
-      }
-    });
+    execFile(
+      "ps",
+      ["-A", "-o", "pid=,ppid=,tty=,lstart="],
+      // C locale: lstart is then "Tue Oct  6 09:08:23 2026", which Date.parse reads.
+      // The timeout turns a hung ps (stalled /proc read) into a logged failure.
+      { maxBuffer: 16 * 1024 * 1024, timeout: PS_TIMEOUT_MS, killSignal: "SIGKILL", env: { ...process.env, LC_ALL: "C" } },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        const procs = parsePs(stdout);
+        if (procs.size === 0) {
+          reject(new Error("ps returned no parsable rows"));
+          return;
+        }
+        resolve(procs);
+      },
+    );
   });
 }
 
 export function parsePs(out: string): ProcTable {
   const procs: ProcTable = new Map();
   for (const line of out.split("\n")) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)/.exec(line);
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/.exec(line);
     if (!m) {
       continue;
     }
-    procs.set(Number(m[1]), { ppid: Number(m[2]), tty: ttyPath(m[3]) });
+    const startMs = Date.parse(m[4]);
+    procs.set(Number(m[1]), {
+      ppid: Number(m[2]),
+      tty: ttyPath(m[3]),
+      startMs: Number.isNaN(startMs) ? undefined : startMs,
+    });
   }
   return procs;
 }
@@ -37,6 +58,18 @@ export function parsePs(out: string): ProcTable {
 function ttyPath(field: string): string | undefined {
   // Linux prints "pts/3", macOS "ttys003"; "?" / "??" mean no controlling tty.
   return /^(pts\/\d+|ttys\d+)$/.test(field) ? `/dev/${field}` : undefined;
+}
+
+/**
+ * True when the live process `pid` can be the one that wrote `session`.
+ * Claude Code writes `startedAt` after its process starts (measured 1-74 s
+ * later), and a recycled pid belongs to a process started after the original
+ * one; so a process starting more than 1 s (lstart's resolution) after
+ * `startedAt` is not this session. An unknown start time fails closed.
+ */
+export function isSessionProcess(session: ClaudeSessionState, procs: ProcTable): boolean {
+  const startMs = procs.get(session.pid)?.startMs;
+  return startMs !== undefined && startMs <= session.startedAt + 1000;
 }
 
 /**
@@ -49,12 +82,15 @@ function ttyPath(field: string): string | undefined {
  */
 export function bindTerminals(
   shellPids: Iterable<number>,
-  sessions: Map<number, ClaudeSessionState>,
+  sessions: Iterable<ClaudeSessionState>,
   procs: ProcTable,
 ): Map<number, ClaudeSessionState> {
   const shells = new Set(shellPids);
   const best = new Map<number, { session: ClaudeSessionState; depth: number }>();
-  for (const session of sessions.values()) {
+  for (const session of sessions) {
+    if (!isSessionProcess(session, procs)) {
+      continue;
+    }
     const found = nearestShell(session.pid, shells, procs);
     if (!found) {
       continue;

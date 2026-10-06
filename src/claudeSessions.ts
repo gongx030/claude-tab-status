@@ -1,9 +1,18 @@
-import * as fs from "fs";
+import { promises as fsp } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ClaudeSessionState, resolveSessionName, toStatus } from "./titleFormatter";
 
 export type Log = (msg: string) => void;
+
+// Non-interactive session kinds CC 2.1.x writes; skipped without a log line.
+const NON_INTERACTIVE_KINDS = new Set(["bg", "daemon", "daemon-worker"]);
+
+/** "Not there": absent, or a `~/.claude-*` entry that is a file (e.g. a backup archive). */
+function isAbsent(e: unknown): boolean {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
 
 /**
  * Every Claude Code session directory: `<config>/sessions` for `~/.claude` and
@@ -11,42 +20,42 @@ export type Log = (msg: string) => void;
  * `$CLAUDE_CONFIG_DIR`. Directories that are the same on disk (backends often
  * symlink `sessions/` to `~/.claude/sessions`) are listed once.
  */
-export function sessionDirs(home: string = os.homedir()): string[] {
+export async function sessionDirs(log: Log, home: string = os.homedir()): Promise<string[]> {
   const configs = new Set<string>();
   if (process.env.CLAUDE_CONFIG_DIR) {
     configs.add(process.env.CLAUDE_CONFIG_DIR);
   }
   try {
-    for (const entry of fs.readdirSync(home)) {
+    for (const entry of await fsp.readdir(home)) {
       if (entry === ".claude" || entry.startsWith(".claude-")) {
         configs.add(path.join(home, entry));
       }
     }
-  } catch {
-    // home unreadable: nothing to watch
+  } catch (e) {
+    log(`cannot list ${home}: ${(e as Error).message}`);
   }
   const seen = new Set<string>();
   const dirs: string[] = [];
   for (const config of configs) {
     const dir = path.join(config, "sessions");
-    let st: fs.Stats;
     try {
-      st = fs.statSync(dir);
-    } catch {
-      continue;
+      const st = await fsp.stat(dir);
+      const key = `${st.dev}:${st.ino}`;
+      if (st.isDirectory() && !seen.has(key)) {
+        seen.add(key);
+        dirs.push(dir);
+      }
+    } catch (e) {
+      if (!isAbsent(e)) {
+        log(`cannot stat ${dir}: ${(e as Error).message}`);
+      }
     }
-    if (!st.isDirectory()) {
-      continue;
-    }
-    const key = `${st.dev}:${st.ino}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      dirs.push(dir);
-    }
+  }
+  if (dirs.length === 0) {
+    log(`no Claude Code session directories found under ${home}`);
   }
   return dirs;
 }
-
 interface RawSession {
   pid?: unknown;
   sessionId?: unknown;
@@ -54,99 +63,87 @@ interface RawSession {
   kind?: unknown;
   name?: unknown;
   status?: unknown;
+  startedAt?: unknown;
   updatedAt?: unknown;
-  procStart?: unknown;
 }
 
-export interface ParsedSession {
-  state: ClaudeSessionState;
-  procStart?: string;
-}
+/** Thrown for a file that exists but cannot be read as JSON (e.g. caught mid-write). */
+class UnreadableSession extends Error {}
 
 /**
  * Validate one `<pid>.json`. Returns undefined for anything that is not an
- * interactive session with a known status: a missing binding is preferable to
- * a wrong one.
+ * interactive session: a missing binding is preferable to a wrong one. An
+ * unrecognised status is kept as `status: undefined` so the caller can hold
+ * the last title. Throws `UnreadableSession` for invalid JSON.
  */
-export function parseSessionFile(text: string, fileName: string, log: Log): ParsedSession | undefined {
+export function parseSessionFile(text: string, file: string, log: Log): ClaudeSessionState | undefined {
   let raw: RawSession;
   try {
     raw = JSON.parse(text) as RawSession;
   } catch {
-    log(`ignoring unparsable session file ${fileName}`);
-    return undefined;
+    throw new UnreadableSession(`unparsable session file ${file}`);
   }
-  if (typeof raw.pid !== "number" || typeof raw.sessionId !== "string") {
-    log(`ignoring session file without pid/sessionId: ${fileName}`);
+  if (typeof raw.pid !== "number" || typeof raw.sessionId !== "string" || typeof raw.startedAt !== "number") {
+    log(`ignoring session file without numeric pid/startedAt or string sessionId: ${file}`);
     return undefined;
   }
   if (raw.kind !== undefined && raw.kind !== "interactive") {
+    if (!(typeof raw.kind === "string" && NON_INTERACTIVE_KINDS.has(raw.kind))) {
+      log(`skipping ${file}: unrecognised kind ${JSON.stringify(raw.kind)}`);
+    }
     return undefined;
   }
   const status = toStatus(raw.status);
   if (!status) {
-    log(`session ${raw.sessionId}: unknown status ${JSON.stringify(raw.status)}`);
-    return undefined;
+    log(`${file}: unrecognised status ${JSON.stringify(raw.status)}; holding the last title`);
   }
   return {
-    state: {
-      sessionId: raw.sessionId,
-      pid: raw.pid,
-      cwd: typeof raw.cwd === "string" ? raw.cwd : undefined,
-      name: resolveSessionName({ name: raw.name, sessionId: raw.sessionId }),
-      status,
-      updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
-    },
-    procStart: typeof raw.procStart === "string" ? raw.procStart : undefined,
+    sessionId: raw.sessionId,
+    pid: raw.pid,
+    cwd: typeof raw.cwd === "string" ? raw.cwd : undefined,
+    name: resolveSessionName({ name: raw.name, sessionId: raw.sessionId }),
+    status,
+    startedAt: raw.startedAt,
+    updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : 0,
   };
 }
 
-/**
- * Linux only: CC's `procStart` is field 22 (starttime) of /proc/<pid>/stat.
- * A mismatch means the pid was recycled by an unrelated process. Elsewhere,
- * or when /proc is unreadable, returns true and liveness is judged by the
- * process-table snapshot alone.
- */
-export function procStartMatches(pid: number, procStart: string | undefined): boolean {
-  if (!procStart || process.platform !== "linux") {
-    return true;
-  }
-  let stat: string;
-  try {
-    stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-  } catch {
-    return false; // process gone
-  }
-  // comm (field 2) may contain spaces and parens; fields resume after the last ')'.
-  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-  return fields[19] === procStart; // field 22 overall = index 19 after comm
+export interface SessionScan {
+  /** Interactive sessions keyed by Claude pid (liveness is checked against `ps`, not here). */
+  sessions: Map<number, ClaudeSessionState>;
+  /** Pids whose file exists but could not be read this time; their titles are held, not reset. */
+  unreadable: Set<number>;
 }
 
-/** All live interactive sessions in `dirs`, keyed by Claude pid. */
-export function readSessions(dirs: string[], log: Log): Map<number, ClaudeSessionState> {
-  const sessions = new Map<number, ClaudeSessionState>();
+export async function readSessions(dirs: string[], log: Log): Promise<SessionScan> {
+  const scan: SessionScan = { sessions: new Map(), unreadable: new Set() };
   for (const dir of dirs) {
     let entries: string[];
     try {
-      entries = fs.readdirSync(dir);
-    } catch {
+      entries = await fsp.readdir(dir);
+    } catch (e) {
+      log(`cannot list ${dir}: ${(e as Error).message}`);
       continue;
     }
     for (const entry of entries) {
-      if (!/^\d+\.json$/.test(entry)) {
+      const m = /^(\d+)\.json$/.exec(entry);
+      if (!m) {
         continue;
       }
-      let text: string;
+      const file = path.join(dir, entry);
       try {
-        text = fs.readFileSync(path.join(dir, entry), "utf8");
-      } catch {
-        continue; // removed between readdir and read
-      }
-      const parsed = parseSessionFile(text, entry, log);
-      if (parsed && procStartMatches(parsed.state.pid, parsed.procStart)) {
-        sessions.set(parsed.state.pid, parsed.state);
+        const session = parseSessionFile(await fsp.readFile(file, "utf8"), file, log);
+        if (session) {
+          scan.sessions.set(session.pid, session);
+        }
+      } catch (e) {
+        if (isAbsent(e)) {
+          continue; // removed between readdir and read: the session ended
+        }
+        log(`cannot read ${file}: ${(e as Error).message}`);
+        scan.unreadable.add(Number(m[1]));
       }
     }
   }
-  return sessions;
+  return scan;
 }

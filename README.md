@@ -74,7 +74,8 @@ Diagnostics are written to the **Claude Tab Status** output channel.
   updating titles and logs why; it does not show wrong ones.
 - A session running inside tmux is not under a VS Code terminal shell, so it
   is not labelled.
-- Linux and macOS only.
+- Linux and macOS only. A session file whose pid now belongs to a process started
+  after the session (a recycled pid) is ignored.
 
 ## Settings
 
