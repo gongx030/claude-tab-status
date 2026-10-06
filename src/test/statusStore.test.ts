@@ -24,12 +24,12 @@ test("writes on change only, retries failures, resets only a tty its shell still
   failNext = true;
   store.update([a, b], ttys); // A fails, B written
   store.update([a, b], ttys); // A retried, B unchanged
-  assert.deepEqual(writes, [["/dev/pts/2", "B ○"], ["/dev/pts/1", "A ○"]]);
+  assert.deepEqual(writes, [["/dev/pts/2", "B 🟢"], ["/dev/pts/1", "A 🟢"]]);
 
   // Claude in shell 20 exits (shell alive): reset. Terminal 30 closes and a new
   // shell 31 reuses /dev/pts/2: its title must not be overwritten by a reset.
   writes.length = 0;
   const c = { shellPid: 31, tty: "/dev/pts/2", session: session("C") };
   store.update([c], new Map([[20, "/dev/pts/1"], [31, "/dev/pts/2"]]));
-  assert.deepEqual(writes, [["/dev/pts/2", "C ○"], ["/dev/pts/1", ""]]);
+  assert.deepEqual(writes, [["/dev/pts/2", "C 🟢"], ["/dev/pts/1", ""]]);
 });

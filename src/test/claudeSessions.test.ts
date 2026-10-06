@@ -10,7 +10,7 @@ test("session file -> title for every Claude Code status", () => {
   const cases: [string, string][] = [
     ["busy", "VCC-transfer ●"],
     ["waiting", "VCC-transfer 🟠"],
-    ["idle", "VCC-transfer ○"],
+    ["idle", "VCC-transfer 🟢"],
     ["shell", "VCC-transfer ●"],
   ];
   for (const [status, title] of cases) {
