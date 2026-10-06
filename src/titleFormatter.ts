@@ -14,8 +14,8 @@ export interface ClaudeSessionState {
 
 const SYMBOL: Record<ClaudeStatus, string> = {
   working: "●",
-  waiting: "🟠", // colour emoji: the only coloured mark, so tabs needing attention stand out
-  idle: "○",
+  waiting: "🟠", // colour emoji: only waiting and idle are coloured, so they stand out from ● working
+  idle: "🟢",
 };
 
 /**
