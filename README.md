@@ -80,7 +80,8 @@ the session name and status, set:
   open/close/focus events, and a `ps` reconcile every 3 s
   (`claudeTabStatus.refreshIntervalMs`). Event-driven updates write a title
   only when it changes; each reconcile tick also rewrites unchanged titles (a
-  few dozen bytes per tab), in case another program replaced them.
+  write under 100 bytes per tab), in case another program replaced them. A
+  terminal whose last write failed is skipped for 10 ticks.
 
 Diagnostics are written to the **Claude Tab Status** output channel.
 
