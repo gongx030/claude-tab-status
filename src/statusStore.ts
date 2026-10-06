@@ -16,9 +16,11 @@ interface Rendered {
 export type TitleWriter = (tty: string, title: string) => void;
 
 /**
- * Last title written to each terminal shell. Writes only on change, so an idle
- * fleet costs no tty traffic. A failed write or reset is not recorded and is
- * therefore retried on the next reconcile.
+ * Last title written to each terminal shell. Writes on change, and on a
+ * re-assert pass rewrites unchanged titles too: another program in the
+ * terminal (Claude Code without CLAUDE_CODE_DISABLE_TERMINAL_TITLE) may have
+ * replaced ours. A failed write or reset is not recorded and is therefore
+ * retried on the next reconcile.
  */
 export class StatusStore {
   private rendered = new Map<number, Rendered>();
@@ -34,8 +36,14 @@ export class StatusStore {
    *   terminal's pts number can be reused by another terminal.
    * @param held Claude pids whose session file exists but was unreadable this
    *   time (e.g. caught mid-write); their titles are kept rather than reset.
+   * @param reassert rewrite titles even when unchanged.
    */
-  update(bindings: Binding[], shellTtys: Map<number, string>, held: Set<number> = new Set()): void {
+  update(
+    bindings: Binding[],
+    shellTtys: Map<number, string>,
+    held: Set<number> = new Set(),
+    reassert = false,
+  ): void {
     const live = new Set<number>();
     for (const b of bindings) {
       const prev = this.rendered.get(b.shellPid);
@@ -50,7 +58,8 @@ export class StatusStore {
       live.add(b.shellPid);
       const session = { ...b.session, status };
       const title = formatTerminalTitle(session);
-      if (prev && prev.title === title && prev.tty === b.tty) {
+      const unchanged = prev !== undefined && prev.title === title && prev.tty === b.tty;
+      if (unchanged && !reassert) {
         continue;
       }
       try {
