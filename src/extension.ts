@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { readSessions, sessionDirs } from "./claudeSessions";
 import { Binding, StatusStore } from "./statusStore";
 import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
+import { snapshotTmuxHops, TmuxHops } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
 
 const WATCH_DEBOUNCE_MS = 150;
@@ -30,6 +31,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const watchers = new Map<string, fs.FSWatcher>();
   let dirs: string[] = [];
   let procs: ProcTable | undefined;
+  let hops: TmuxHops = new Map();
   let snapshotPids = ""; // session pids present when `procs` was taken
   let running = false;
   let disposed = false;
@@ -79,14 +81,21 @@ export function activate(context: vscode.ExtensionContext): void {
     // could hold the previous owner of that pid.
     const pids = [...sessions.keys()].sort().join(",");
     if (full || !procs || pids !== snapshotPids) {
-      procs = await snapshotProcesses();
+      // One failing tmux query must not stop the tabs outside tmux updating.
+      [procs, hops] = await Promise.all([
+        snapshotProcesses(),
+        snapshotTmuxHops().catch((e: Error) => {
+          log(`${e.message}; sessions inside tmux are not bound this tick`);
+          return new Map<number, number>();
+        }),
+      ]);
       snapshotPids = pids;
     }
     if (disposed) {
       return;
     }
     const bindings: Binding[] = [];
-    for (const [shellPid, session] of bindTerminals(shellPids.values(), sessions.values(), procs)) {
+    for (const [shellPid, session] of bindTerminals(shellPids.values(), sessions.values(), procs, hops)) {
       const tty = procs.get(shellPid)?.tty;
       if (tty) {
         bindings.push({ shellPid, tty, session });

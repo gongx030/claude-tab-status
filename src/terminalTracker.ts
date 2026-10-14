@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
 import { ClaudeSessionState } from "./titleFormatter";
+import { TmuxHops } from "./tmuxClients";
 
 export interface ProcInfo {
   ppid: number;
@@ -79,11 +80,14 @@ export function isSessionProcess(session: ClaudeSessionState, procs: ProcTable):
  * nested shell or a second VS Code window's terminal never claims it. With
  * several sessions under one shell (claude started from inside claude), the
  * deepest one is the foreground process; ties go to the most recent update.
+ * A session inside tmux binds to the terminal its tmux client runs in; a
+ * detached tmux session binds to none.
  */
 export function bindTerminals(
   shellPids: Iterable<number>,
   sessions: Iterable<ClaudeSessionState>,
   procs: ProcTable,
+  hops: TmuxHops = new Map(),
 ): Map<number, ClaudeSessionState> {
   const shells = new Set(shellPids);
   const best = new Map<number, { session: ClaudeSessionState; depth: number }>();
@@ -91,7 +95,7 @@ export function bindTerminals(
     if (!isSessionProcess(session, procs)) {
       continue;
     }
-    const found = nearestShell(session.pid, shells, procs);
+    const found = nearestShell(session.pid, shells, procs, hops);
     if (!found) {
       continue;
     }
@@ -115,16 +119,21 @@ function nearestShell(
   pid: number,
   shells: Set<number>,
   procs: ProcTable,
+  hops: TmuxHops,
 ): { shell: number; depth: number } | undefined {
   let depth = 0;
-  let cur = procs.get(pid)?.ppid;
+  let cur: number | undefined = pid;
   // Bounded walk: guards against a malformed table with a ppid cycle.
-  while (cur !== undefined && cur > 1 && depth < 64) {
+  while (depth < 64) {
+    // A tmux pane process continues at its attached client, not the server.
+    cur = hops.get(cur) ?? procs.get(cur)?.ppid;
+    if (cur === undefined || cur <= 1) {
+      return undefined;
+    }
     depth++;
     if (shells.has(cur)) {
       return { shell: cur, depth };
     }
-    cur = procs.get(cur)?.ppid;
   }
   return undefined;
 }
