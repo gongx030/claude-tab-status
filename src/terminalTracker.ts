@@ -120,13 +120,26 @@ function nearestShell(
   shells: Set<number>,
   procs: ProcTable,
   hops: TmuxHops,
+  depth = 0,
 ): { shell: number; depth: number } | undefined {
-  let depth = 0;
   let cur: number | undefined = pid;
-  // Bounded walk: guards against a malformed table with a ppid cycle.
+  // Bounded walk: guards against a malformed table with a ppid cycle, and a
+  // tmux client run inside a pane of its own session.
   while (depth < 64) {
-    // A tmux pane process continues at its attached client, not the server.
-    cur = hops.get(cur) ?? procs.get(cur)?.ppid;
+    const clients = hops.get(cur);
+    if (clients) {
+      // A tmux pane process continues at an attached client, not the server.
+      for (const client of clients) {
+        const found = shells.has(client)
+          ? { shell: client, depth: depth + 1 }
+          : nearestShell(client, shells, procs, hops, depth + 1);
+        if (found) {
+          return found;
+        }
+      }
+      return undefined;
+    }
+    cur = procs.get(cur)?.ppid;
     if (cur === undefined || cur <= 1) {
       return undefined;
     }

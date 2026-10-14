@@ -81,12 +81,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // could hold the previous owner of that pid.
     const pids = [...sessions.keys()].sort().join(",");
     if (full || !procs || pids !== snapshotPids) {
-      // One failing tmux query must not stop the tabs outside tmux updating.
+      // A failing tmux query must not stop the tabs outside tmux updating, and
+      // keeps the last known hops so tmux tabs hold their titles, not reset.
       [procs, hops] = await Promise.all([
         snapshotProcesses(),
         snapshotTmuxHops().catch((e: Error) => {
-          log(`${e.message}; sessions inside tmux are not bound this tick`);
-          return new Map<number, number>();
+          log(`${e.message}; keeping the previous tmux bindings`);
+          return hops;
         }),
       ]);
       snapshotPids = pids;

@@ -47,17 +47,19 @@ test("each session binds to its nearest terminal shell only", () => {
   const ids = (b: Map<number, ClaudeSessionState>) => [...b].map(([shell, s]) => [shell, s.sessionId]).sort();
   // Without tmux hops, sessions under the tmux server bind to no terminal.
   assert.deepEqual(ids(bindTerminals([20, 30, 40, 60], sessions, procs)), [[20, "A"], [30, "inner"]]);
-  // With them, the attached pane binds to the shell running its client.
+  // With them, the attached pane binds to the shell running its client, even
+  // when a more recently active client (99, e.g. over ssh) is outside VS Code.
   assert.deepEqual(
-    ids(bindTerminals([20, 30, 40, 60], sessions, procs, new Map([[52, 61]]))),
+    ids(bindTerminals([20, 30, 40, 60], sessions, procs, new Map([[52, [99, 61]]]))),
     [[20, "A"], [30, "inner"], [60, "tmux"]],
   );
 });
 
-test("parseTmuxHops maps each pane to its session's most recently active client", () => {
+test("parseTmuxHops maps each pane to its session's clients, most recent first", () => {
   const hops = parseTmuxHops(
     "52 $1\n54 $2\n55 $1\n",
     "61 $1 100\n62 $1 200\n",
   );
-  assert.deepEqual([...hops].sort(), [[52, 62], [55, 62]]);
+  assert.deepEqual([...hops].sort(), [[52, [62, 61]], [55, [62, 61]]]);
+  assert.throws(() => parseTmuxHops("52 $1\n", "garbage\n"), /unrecognised/);
 });
