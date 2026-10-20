@@ -17,9 +17,12 @@ It also adds a **Claude Sessions** view to the activity bar, listing every
 Claude Code session that runs in a tmux session recording its backend:
 
 ```text
-disease_kg   build · working · open
-autodev      claude · idle
-vcc          claude · waiting · ⚠ open in 2 tabs
+▾ Running (3)
+    disease_kg   build · working · open
+    autodev      claude · idle
+    vcc          claude · waiting · ⚠ open in 2 tabs
+▾ Stopped (1)
+    autodev4     build · stopped
 ```
 
 Each row shows the session name, the backend, the state, and whether a VS Code
@@ -29,6 +32,21 @@ gets a second tab from the list. A session attached in more than one tab (for
 example by a hand-typed `tmux attach`) is marked ⚠ and offers **Close
 Duplicate Tabs**. Rows cannot be dragged into the terminal panel: VS Code has
 no API for opening a terminal from a drop.
+
+Right-click a running session for **Stop Session**: the extension clears the
+prompt and sends `/exit`, so Claude Code shuts down cleanly and its tmux session
+ends. A session that is working or waiting asks for confirmation first (it is
+interrupted with Escape), and one that has not exited after 15 s offers **Force
+Kill** (`tmux kill-session`).
+
+Every listed session is remembered (name, backend, directory, conversation id),
+so when its tmux session ends, by Stop, `/exit` or a crash, it moves to a
+**Stopped** group instead of vanishing. Clicking a stopped session resumes it on
+its last backend in the editor area: through its `~/.bashrc` wrapper when one
+exists (`autodev2 build`), else `<launcher> -r <conversation id>` in its
+directory. **Resume with Backend…** picks another backend from the
+`claude`/`claude_<backend>` functions an interactive bash defines, which is how
+a session switches backend. **Forget** removes it from the list.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's

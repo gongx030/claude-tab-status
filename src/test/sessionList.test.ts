@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { backendLabel, buildRows } from "../sessionList";
+import { backendLabel, buildRows, paneOf, rememberRows, resumeCommand, stoppedSessions } from "../sessionList";
 import { parsePs } from "../terminalTracker";
 import { parseBackendRecord, parseTmuxSnapshot } from "../tmuxClients";
 import { ClaudeSessionState } from "../titleFormatter";
@@ -45,5 +45,32 @@ test("rows list recorded tmux sessions with the VS Code tabs attached to each", 
   assert.deepEqual(
     rows.map((r) => [r.tmuxName, r.session.name, r.launcher, r.terminals]),
     [["autodev", "autodev", "claude", []], ["vcc", "vcc-chat", "claude_build", [60, 70]]],
+  );
+});
+
+test("a remembered session whose tmux session ended is stopped, and resumes through its wrapper", () => {
+  const e = new Date(T0).toString().slice(0, 24);
+  const procs = parsePs([`50 1 ? ${e}`, `52 50 pts/9 ${e}`, `51 52 pts/9 ${e}`].join("\n"));
+  const tmux = parseTmuxSnapshot("52 $1\n", "", "$1\tvcc\n");
+  const rows = buildRows([session(51, "vcc")], procs, tmux, new Map([["$1", "claude_build"]]), new Set());
+  const base = { launcher: "claude", sessionId: "u-2", cwd: "/p/autodev", lastSeen: 1 };
+  const earlier = [
+    { ...base, tmuxName: "autodev2", name: "autodev2", host: "h1" },
+    { ...base, tmuxName: "ad_map", name: "ad_map", host: "h2" }, // another host's: never stopped here
+  ];
+
+  const known = rememberRows(earlier, rows, "h1", 99);
+  assert.deepEqual(
+    known.map((k) => [k.tmuxName, k.host, k.launcher, k.lastSeen]),
+    [["ad_map", "h2", "claude", 1], ["autodev2", "h1", "claude", 1], ["vcc", "h1", "claude_build", 99]],
+  );
+  assert.deepEqual(stoppedSessions(known, tmux, "h1").map((k) => k.tmuxName), ["autodev2"]);
+
+  assert.equal(paneOf(51, "52 %7\n60 %8\n", procs), "%7");
+  assert.equal(
+    resumeCommand(known[1], "claude_codex"),
+    `if declare -F 'autodev2' >/dev/null; then 'autodev2' 'codex';` +
+      ` else export CC_TMUX_DISABLE=0; cd '/p/autodev' && 'claude_codex' -r 'u-2'; fi` +
+      ` || { rc=$?; echo; read -rp "exited $rc; Enter to close " _; }`,
   );
 });

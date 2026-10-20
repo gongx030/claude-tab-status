@@ -1,15 +1,51 @@
+import { execFile } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as vscode from "vscode";
 import { readSessions, sessionDirs } from "./claudeSessions";
 import { Binding, StatusStore } from "./statusStore";
-import { buildRows, SessionRow } from "./sessionList";
-import { SessionTreeProvider } from "./sessionTree";
+import {
+  backendLabel,
+  buildRows,
+  KnownSession,
+  paneOf,
+  rememberRows,
+  resumeCommand,
+  SessionRow,
+  stoppedSessions,
+} from "./sessionList";
+import { SessionNode, SessionTreeProvider } from "./sessionTree";
 import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
-import { BackendRecords, EMPTY_TMUX, snapshotTmux, TmuxSnapshot } from "./tmuxClients";
+import { BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
 
 const WATCH_DEBOUNCE_MS = 150;
 const DEFAULT_INTERVAL_MS = 3000;
+/** globalState key of the remembered sessions behind the Stopped group. */
+const KNOWN_KEY = "claudeTabStatus.knownSessions";
+/** A remembered session's `lastSeen` is persisted at most this often; structural changes immediately. */
+const KNOWN_SAVE_MS = 5 * 60_000;
+/** How long Stop waits for Claude Code to exit before offering a forced kill. */
+const STOP_WAIT_MS = 15_000;
+/** Remembered sessions are per host: see KnownSession.host. */
+const HOST = os.hostname();
+
+function loadKnown(raw: unknown): KnownSession[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.filter(
+    (k): k is KnownSession =>
+      typeof k?.tmuxName === "string" &&
+      typeof k.launcher === "string" &&
+      typeof k.name === "string" &&
+      typeof k.sessionId === "string" &&
+      typeof k.host === "string" &&
+      typeof k.lastSeen === "number",
+  );
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let shutdown: (() => void) | undefined;
 
@@ -38,6 +74,32 @@ export function activate(context: vscode.ExtensionContext): void {
   const tree = new SessionTreeProvider();
   /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client (pruned in reconcileOnce). */
   const opened = new Map<string, vscode.Terminal>();
+  let known = loadKnown(context.globalState.get(KNOWN_KEY));
+  const shapeOf = (ks: KnownSession[]) => JSON.stringify(ks.map(({ lastSeen: _, ...k }) => k));
+  let knownSaved = { shape: shapeOf(known), at: Date.now() };
+
+  /**
+   * Persist `known` on any change but `lastSeen`, and otherwise every
+   * `KNOWN_SAVE_MS`. The marker moves only on success, so a failed write is
+   * retried on the next reconcile.
+   */
+  function saveKnown(force = false): Promise<void> {
+    const shape = shapeOf(known);
+    if (!(force || shape !== knownSaved.shape || Date.now() - knownSaved.at > KNOWN_SAVE_MS)) {
+      return Promise.resolve();
+    }
+    return Promise.resolve(context.globalState.update(KNOWN_KEY, known)).then(
+      () => {
+        knownSaved = { shape, at: Date.now() };
+      },
+      (e: Error) => {
+        log(`cannot save known sessions: ${e.message}`);
+        throw e;
+      },
+    );
+  }
+  /** Whether any tmux snapshot has succeeded: until one has, "no tmux session" proves nothing about Stopped. */
+  let tmuxSeen = false;
   let snapshotPids = ""; // session pids present when `procs` was taken
   let running = false;
   let disposed = false;
@@ -92,10 +154,16 @@ export function activate(context: vscode.ExtensionContext): void {
       // keeps the last known hops so tmux tabs hold their titles, not reset.
       [procs, tmux] = await Promise.all([
         snapshotProcesses(),
-        snapshotTmux().catch((e: Error) => {
-          log(`${e.message}; keeping the previous tmux bindings`);
-          return tmux;
-        }),
+        snapshotTmux().then(
+          (snap) => {
+            tmuxSeen = true;
+            return snap;
+          },
+          (e: Error) => {
+            log(`${e.message}; keeping the previous tmux bindings`);
+            return tmux;
+          },
+        ),
       ]);
       snapshotPids = pids;
     }
@@ -112,7 +180,11 @@ export function activate(context: vscode.ExtensionContext): void {
         opened.delete(id);
       }
     }
-    tree.update(buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values())));
+    const rows = buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values()));
+    // Re-read: another window may have forgotten an entry since.
+    known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, HOST, Date.now());
+    saveKnown().catch(() => undefined); // logged; retried next reconcile
+    tree.update(rows, tmuxSeen ? stoppedSessions(known, tmux, HOST) : []);
     if (!titles) {
       return;
     }
@@ -218,11 +290,11 @@ export function activate(context: vscode.ExtensionContext): void {
    * A tab opened here counts as attached before its client shows up in the
    * next tmux snapshot, so a double click does not open two.
    */
-  function openSession(clicked?: SessionRow): void {
-    if (!clicked) {
+  function openSession(node?: SessionNode): void {
+    const row = liveRow(node);
+    if (!row) {
       return;
     }
-    const row = tree.row(clicked.tmuxId) ?? clicked;
     const pending = opened.get(row.tmuxId);
     const existing = terminalsOf(row)[0] ?? (pending && vscode.window.terminals.includes(pending) ? pending : undefined);
     if (existing) {
@@ -245,8 +317,8 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   /** Keep the active (else the first) tab attached to the session; close the others. */
-  function closeDuplicates(clicked?: SessionRow): void {
-    const row = clicked && (tree.row(clicked.tmuxId) ?? clicked);
+  function closeDuplicates(node?: SessionNode): void {
+    const row = liveRow(node);
     if (!row) {
       return;
     }
@@ -259,10 +331,191 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /** The current row for a clicked running node; the clicked copy may be a tick old. */
+  function liveRow(node?: SessionNode): SessionRow | undefined {
+    return node?.kind === "running" ? tree.row(node.row.tmuxId) ?? node.row : undefined;
+  }
+
+  /**
+   * Quit Claude Code in the session with `/exit`, which lets it shut down
+   * cleanly; the tmux session ends with it. Measured on CC 2.1.295: Ctrl-U
+   * clears a half-typed prompt first, and Escape (sent only to a busy session)
+   * interrupts the turn or dismisses a dialog.
+   */
+  async function stopSession(node?: SessionNode): Promise<void> {
+    const row = liveRow(node);
+    if (!row) {
+      return;
+    }
+    const { name, status } = row.session;
+    if (status !== "idle") {
+      const choice = await vscode.window.showWarningMessage(
+        `"${name}" is ${status ?? "in an unknown state"}. Stopping it interrupts what it is doing.`,
+        { modal: true },
+        "Stop",
+      );
+      if (choice !== "Stop") {
+        return;
+      }
+    }
+    try {
+      const pane = paneOf(
+        row.session.pid,
+        (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id}"])) ?? "",
+        procs ?? new Map(),
+      );
+      if (!pane) {
+        throw new Error(`no pane of tmux session ${row.tmuxName} runs Claude pid ${row.session.pid}`);
+      }
+      const keys = async (...args: string[]) => {
+        await runTmux(["send-keys", "-t", pane, ...args]);
+        await sleep(300);
+      };
+      if (status !== "idle") {
+        await keys("Escape");
+      }
+      await keys("C-u");
+      await keys("-l", "/exit");
+      await keys("Enter");
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not stop "${name}": ${(e as Error).message}`);
+      return;
+    }
+    log(`sent /exit to "${name}" (tmux ${row.tmuxName})`);
+    for (const deadline = Date.now() + STOP_WAIT_MS; Date.now() < deadline; ) {
+      await sleep(1000);
+      try {
+        if (!(await tmuxSessionExists(row.tmuxId))) {
+          void reconcile(true);
+          return;
+        }
+      } catch (e) {
+        // Unknown is not gone: keep waiting, and offer the kill at the end.
+        log(`checking tmux session ${row.tmuxName}: ${(e as Error).message}`);
+      }
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `"${name}" has not exited after ${STOP_WAIT_MS / 1000} s.`,
+      "Force Kill",
+    );
+    if (choice === "Force Kill") {
+      try {
+        await runTmux(["kill-session", "-t", row.tmuxId]);
+        log(`killed tmux session ${row.tmuxName}`);
+      } catch (e) {
+        // Exited between the prompt and the click: nothing left to kill.
+        if (!/can't find session/.test((e as Error).message)) {
+          log(`cannot kill tmux session ${row.tmuxName}: ${(e as Error).message}`);
+          void vscode.window.showErrorMessage(`Could not kill tmux session ${row.tmuxName}: ${(e as Error).message}`);
+        }
+      }
+    }
+    void reconcile(true);
+  }
+
+  /** False only for tmux's "can't find session" (or no server); other failures throw. */
+  async function tmuxSessionExists(tmuxId: string): Promise<boolean> {
+    try {
+      return (await runTmux(["has-session", "-t", tmuxId])) !== undefined;
+    } catch (e) {
+      if (/can't find session/.test((e as Error).message)) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  /** Resume terminals by tmux session name, so a double click does not start two. */
+  const resuming = new Map<string, vscode.Terminal>();
+
+  function resumeSession(node?: SessionNode, launcher?: string): void {
+    if (node?.kind !== "stopped") {
+      return;
+    }
+    const k = node.known;
+    const pending = resuming.get(k.tmuxName);
+    if (pending && vscode.window.terminals.includes(pending)) {
+      pending.show();
+      return;
+    }
+    const terminal = vscode.window.createTerminal({
+      name: k.tmuxName,
+      shellPath: "bash",
+      // Interactive, for the launcher functions ~/.bashrc defines.
+      shellArgs: ["-ic", resumeCommand(k, launcher ?? k.launcher)],
+      cwd: k.cwd,
+      env: { TMUX: null, TMUX_PANE: null },
+      location: vscode.TerminalLocation.Editor,
+    });
+    resuming.set(k.tmuxName, terminal);
+    terminal.show();
+    log(`resuming "${k.name}" (tmux ${k.tmuxName}) on ${launcher ?? k.launcher}`);
+  }
+
+  /** Launcher functions (`claude`, `claude_<backend>`) as an interactive bash defines them. */
+  function listLaunchers(): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      execFile("bash", ["-ic", "compgen -A function claude"], { timeout: 60_000 }, (err, stdout, stderr) => {
+        // compgen exits 1 when nothing matches: no launchers, not a failure.
+        if (err && !(err.code === 1 && stdout.trim() === "")) {
+          const detail = err.killed ? "timed out after 60 s" : stderr.trim().split("\n").slice(-3).join(" ") || err.message;
+          reject(new Error(detail));
+          return;
+        }
+        resolve([...new Set(stdout.split("\n").map((l) => l.trim()).filter((l) => /^claude(_\w+)?$/.test(l)))].sort());
+      });
+    });
+  }
+
+  async function resumeSessionWith(node?: SessionNode): Promise<void> {
+    if (node?.kind !== "stopped") {
+      return;
+    }
+    let launchers: string[];
+    try {
+      launchers = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Listing backends…" },
+        listLaunchers,
+      );
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not list backends: ${(e as Error).message}`);
+      return;
+    }
+    if (launchers.length === 0) {
+      void vscode.window.showErrorMessage("No claude / claude_<backend> launcher is defined in an interactive bash.");
+      return;
+    }
+    const last = node.known.launcher;
+    const pick = await vscode.window.showQuickPick(
+      launchers.map((l) => ({ label: backendLabel(l), description: l === last ? `${l} (last used)` : l, launcher: l })),
+      { title: `Resume "${node.known.name}" with backend`, placeHolder: backendLabel(last) },
+    );
+    if (pick) {
+      resumeSession(node, pick.launcher);
+    }
+  }
+
+  function forgetSession(node?: SessionNode): void {
+    if (node?.kind !== "stopped") {
+      return;
+    }
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter(
+      (k) => !(k.host === node.known.host && k.tmuxName === node.known.tmuxName),
+    );
+    saveKnown(true).then(
+      () => void reconcile(false),
+      (e: Error) => void vscode.window.showErrorMessage(`Could not forget "${node.known.name}": ${e.message}`),
+    );
+  }
+
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("claudeTabStatus.sessions", tree),
     vscode.commands.registerCommand("claudeTabStatus.openSession", openSession),
     vscode.commands.registerCommand("claudeTabStatus.closeDuplicateTabs", closeDuplicates),
+    vscode.commands.registerCommand("claudeTabStatus.stopSession", stopSession),
+    vscode.commands.registerCommand("claudeTabStatus.resumeSession", (n?: SessionNode) => resumeSession(n)),
+    vscode.commands.registerCommand("claudeTabStatus.resumeSessionWith", resumeSessionWith),
+    vscode.commands.registerCommand("claudeTabStatus.forgetSession", forgetSession),
     vscode.commands.registerCommand("claudeTabStatus.refreshSessions", () => reconcile(true)),
     vscode.window.onDidOpenTerminal(async (t) => {
       await track(t);
@@ -270,9 +523,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.window.onDidCloseTerminal((t) => {
       shellPids.delete(t);
-      for (const [id, o] of opened) {
-        if (o === t) {
-          opened.delete(id);
+      for (const pending of [opened, resuming]) {
+        for (const [id, o] of pending) {
+          if (o === t) {
+            pending.delete(id);
+          }
         }
       }
       void reconcile(false);

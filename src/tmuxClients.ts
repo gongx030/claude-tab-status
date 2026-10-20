@@ -175,7 +175,7 @@ export function parseTmuxHops(panes: string, clients: string): TmuxHops {
 }
 
 /** stdout, or undefined when tmux is absent or has no server. Other failures throw. */
-function tmux(args: string[]): Promise<string | undefined> {
+export function tmux(args: string[]): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
     execFile(
       "tmux",
