@@ -36,7 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let tmux: TmuxSnapshot = EMPTY_TMUX;
   const backends = new BackendRecords();
   const tree = new SessionTreeProvider();
-  /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client. */
+  /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client (pruned in reconcileOnce). */
   const opened = new Map<string, vscode.Terminal>();
   let snapshotPids = ""; // session pids present when `procs` was taken
   let running = false;
@@ -74,6 +74,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
   /** @param full re-discover session dirs, re-run ps and re-assert titles (timer, terminal opened). */
   async function reconcileOnce(full: boolean): Promise<void> {
+    const titles = config().get<boolean>("enabled", true);
+    if (!titles) {
+      // First, so a failing ps or tmux below cannot keep the titles.
+      store.update([], shellTtys(procs)); // resets every title this extension set
+    }
     if (full || dirs.length === 0) {
       dirs = await sessionDirs(log);
       watchDirs(dirs);
@@ -98,9 +103,17 @@ export function activate(context: vscode.ExtensionContext): void {
     if (disposed) {
       return;
     }
+    // A pending tab whose client has shown up is now found through `tmux.clients`;
+    // keeping it would point at whatever session that client switched to later.
+    const clientPids = new Set(tmux.clients.map((c) => c.pid));
+    for (const [id, t] of opened) {
+      const pid = shellPids.get(t);
+      if (pid !== undefined && clientPids.has(pid)) {
+        opened.delete(id);
+      }
+    }
     tree.update(buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values())));
-    if (!config().get<boolean>("enabled", true)) {
-      store.update([], shellTtys(procs)); // resets every title this extension set
+    if (!titles) {
       return;
     }
     const bindings: Binding[] = [];
