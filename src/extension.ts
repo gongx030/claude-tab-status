@@ -1,5 +1,6 @@
 import { execFile } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as vscode from "vscode";
 import { readSessions, sessionDirs } from "./claudeSessions";
 import { Binding, StatusStore } from "./statusStore";
@@ -26,6 +27,8 @@ const KNOWN_KEY = "claudeTabStatus.knownSessions";
 const KNOWN_SAVE_MS = 5 * 60_000;
 /** How long Stop waits for Claude Code to exit before offering a forced kill. */
 const STOP_WAIT_MS = 15_000;
+/** Remembered sessions are per host: see KnownSession.host. */
+const HOST = os.hostname();
 
 function loadKnown(raw: unknown): KnownSession[] {
   if (!Array.isArray(raw)) {
@@ -37,6 +40,7 @@ function loadKnown(raw: unknown): KnownSession[] {
       typeof k.launcher === "string" &&
       typeof k.name === "string" &&
       typeof k.sessionId === "string" &&
+      typeof k.host === "string" &&
       typeof k.lastSeen === "number",
   );
 }
@@ -74,13 +78,25 @@ export function activate(context: vscode.ExtensionContext): void {
   const shapeOf = (ks: KnownSession[]) => JSON.stringify(ks.map(({ lastSeen: _, ...k }) => k));
   let knownSaved = { shape: shapeOf(known), at: Date.now() };
 
-  /** Persist `known` on any change but `lastSeen`, and otherwise every `KNOWN_SAVE_MS`. */
-  function saveKnown(force = false): void {
+  /**
+   * Persist `known` on any change but `lastSeen`, and otherwise every
+   * `KNOWN_SAVE_MS`. The marker moves only on success, so a failed write is
+   * retried on the next reconcile.
+   */
+  function saveKnown(force = false): Promise<void> {
     const shape = shapeOf(known);
-    if (force || shape !== knownSaved.shape || Date.now() - knownSaved.at > KNOWN_SAVE_MS) {
-      knownSaved = { shape, at: Date.now() };
-      context.globalState.update(KNOWN_KEY, known).then(undefined, (e: Error) => log(`cannot save known sessions: ${e.message}`));
+    if (!(force || shape !== knownSaved.shape || Date.now() - knownSaved.at > KNOWN_SAVE_MS)) {
+      return Promise.resolve();
     }
+    return Promise.resolve(context.globalState.update(KNOWN_KEY, known)).then(
+      () => {
+        knownSaved = { shape, at: Date.now() };
+      },
+      (e: Error) => {
+        log(`cannot save known sessions: ${e.message}`);
+        throw e;
+      },
+    );
   }
   /** Whether any tmux snapshot has succeeded: until one has, "no tmux session" proves nothing about Stopped. */
   let tmuxSeen = false;
@@ -166,9 +182,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const rows = buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values()));
     // Re-read: another window may have forgotten an entry since.
-    known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, Date.now());
-    saveKnown();
-    tree.update(rows, tmuxSeen ? stoppedSessions(known, tmux) : []);
+    known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, HOST, Date.now());
+    saveKnown().catch(() => undefined); // logged; retried next reconcile
+    tree.update(rows, tmuxSeen ? stoppedSessions(known, tmux, HOST) : []);
     if (!titles) {
       return;
     }
@@ -368,29 +384,44 @@ export function activate(context: vscode.ExtensionContext): void {
     log(`sent /exit to "${name}" (tmux ${row.tmuxName})`);
     for (const deadline = Date.now() + STOP_WAIT_MS; Date.now() < deadline; ) {
       await sleep(1000);
-      if (!(await tmuxSessionExists(row.tmuxId))) {
-        void reconcile(true);
-        return;
+      try {
+        if (!(await tmuxSessionExists(row.tmuxId))) {
+          void reconcile(true);
+          return;
+        }
+      } catch (e) {
+        // Unknown is not gone: keep waiting, and offer the kill at the end.
+        log(`checking tmux session ${row.tmuxName}: ${(e as Error).message}`);
       }
     }
     const choice = await vscode.window.showWarningMessage(
       `"${name}" has not exited after ${STOP_WAIT_MS / 1000} s.`,
       "Force Kill",
     );
-    if (choice === "Force Kill" && (await tmuxSessionExists(row.tmuxId))) {
-      await runTmux(["kill-session", "-t", row.tmuxId]).catch((e: Error) =>
-        vscode.window.showErrorMessage(`Could not kill tmux session ${row.tmuxName}: ${e.message}`),
-      );
-      log(`killed tmux session ${row.tmuxName}`);
+    if (choice === "Force Kill") {
+      try {
+        await runTmux(["kill-session", "-t", row.tmuxId]);
+        log(`killed tmux session ${row.tmuxName}`);
+      } catch (e) {
+        // Exited between the prompt and the click: nothing left to kill.
+        if (!/can't find session/.test((e as Error).message)) {
+          log(`cannot kill tmux session ${row.tmuxName}: ${(e as Error).message}`);
+          void vscode.window.showErrorMessage(`Could not kill tmux session ${row.tmuxName}: ${(e as Error).message}`);
+        }
+      }
     }
     void reconcile(true);
   }
 
+  /** False only for tmux's "can't find session" (or no server); other failures throw. */
   async function tmuxSessionExists(tmuxId: string): Promise<boolean> {
     try {
       return (await runTmux(["has-session", "-t", tmuxId])) !== undefined;
-    } catch {
-      return false; // "can't find session"
+    } catch (e) {
+      if (/can't find session/.test((e as Error).message)) {
+        return false;
+      }
+      throw e;
     }
   }
 
@@ -424,9 +455,11 @@ export function activate(context: vscode.ExtensionContext): void {
   /** Launcher functions (`claude`, `claude_<backend>`) as an interactive bash defines them. */
   function listLaunchers(): Promise<string[]> {
     return new Promise((resolve, reject) => {
-      execFile("bash", ["-ic", "compgen -A function claude"], { timeout: 60_000 }, (err, stdout) => {
-        if (err) {
-          reject(err);
+      execFile("bash", ["-ic", "compgen -A function claude"], { timeout: 60_000 }, (err, stdout, stderr) => {
+        // compgen exits 1 when nothing matches: no launchers, not a failure.
+        if (err && !(err.code === 1 && stdout.trim() === "")) {
+          const detail = err.killed ? "timed out after 60 s" : stderr.trim().split("\n").slice(-3).join(" ") || err.message;
+          reject(new Error(detail));
           return;
         }
         resolve([...new Set(stdout.split("\n").map((l) => l.trim()).filter((l) => /^claude(_\w+)?$/.test(l)))].sort());
@@ -466,9 +499,13 @@ export function activate(context: vscode.ExtensionContext): void {
     if (node?.kind !== "stopped") {
       return;
     }
-    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => k.tmuxName !== node.known.tmuxName);
-    saveKnown(true);
-    void reconcile(false);
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter(
+      (k) => !(k.host === node.known.host && k.tmuxName === node.known.tmuxName),
+    );
+    saveKnown(true).then(
+      () => void reconcile(false),
+      (e: Error) => void vscode.window.showErrorMessage(`Could not forget "${node.known.name}": ${e.message}`),
+    );
   }
 
   context.subscriptions.push(

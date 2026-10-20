@@ -77,15 +77,23 @@ export interface KnownSession {
   name: string;
   sessionId: string;
   cwd?: string;
+  /**
+   * Host whose tmux server ran it. globalState is shared by every Remote-SSH
+   * host the client connects to, and "absent from this host's tmux" says
+   * nothing about a session on another host.
+   */
+  host: string;
   /** Epoch ms the session was last seen running. */
   lastSeen: number;
 }
 
-/** `known` updated with every running row, keyed by tmux session name. */
-export function rememberRows(known: KnownSession[], rows: SessionRow[], now: number): KnownSession[] {
-  const byName = new Map(known.map((k) => [k.tmuxName, k]));
+/** `known` updated with every running row on `host`, keyed by host and tmux session name. */
+export function rememberRows(known: KnownSession[], rows: SessionRow[], host: string, now: number): KnownSession[] {
+  const key = (k: { host: string; tmuxName: string }) => `${k.host}\0${k.tmuxName}`;
+  const byName = new Map(known.map((k) => [key(k), k]));
   for (const r of rows) {
-    byName.set(r.tmuxName, {
+    byName.set(key({ host, tmuxName: r.tmuxName }), {
+      host,
       tmuxName: r.tmuxName,
       launcher: r.launcher,
       name: r.session.name,
@@ -94,7 +102,7 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], now: num
       lastSeen: now,
     });
   }
-  return [...byName.values()].sort((a, b) => a.tmuxName.localeCompare(b.tmuxName));
+  return [...byName.values()].sort((a, b) => a.tmuxName.localeCompare(b.tmuxName) || a.host.localeCompare(b.host));
 }
 
 /**
@@ -102,9 +110,9 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], now: num
  * session is alive but shows no Claude row (starting, or held on an exit
  * message) is neither running nor stopped, and is left out.
  */
-export function stoppedSessions(known: KnownSession[], tmux: TmuxSnapshot): KnownSession[] {
+export function stoppedSessions(known: KnownSession[], tmux: TmuxSnapshot, host: string): KnownSession[] {
   const alive = new Set(tmux.sessions.values());
-  return known.filter((k) => !alive.has(k.tmuxName));
+  return known.filter((k) => k.host === host && !alive.has(k.tmuxName));
 }
 
 /** The pane (`%7`) whose root process is `pid` or one of its ancestors, from `list-panes -F "#{pane_pid} #{pane_id}"`. */
@@ -156,7 +164,9 @@ function q(s: string): string {
  */
 export function resumeCommand(k: KnownSession, launcher: string): string {
   const word = launcher === "claude" ? "" : ` ${q(backendLabel(launcher))}`;
-  const direct = `${k.cwd ? `cd ${q(k.cwd)} && ` : ""}${q(launcher)} -r ${q(k.sessionId)}`;
+  // CC_TMUX_DISABLE=0: ~/.bashrc defaults it to 1, which would resume outside
+  // tmux, where the session never shows as running again.
+  const direct = `export CC_TMUX_DISABLE=0; ${k.cwd ? `cd ${q(k.cwd)} && ` : ""}${q(launcher)} -r ${q(k.sessionId)}`;
   return (
     `if declare -F ${q(k.tmuxName)} >/dev/null; then ${q(k.tmuxName)}${word}; else ${direct}; fi` +
     ` || { rc=$?; echo; read -rp "exited $rc; Enter to close " _; }`
