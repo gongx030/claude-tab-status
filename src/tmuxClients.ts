@@ -15,16 +15,132 @@ const TMUX_TIMEOUT_MS = 2_000;
  */
 export type TmuxHops = Map<number, number[]>;
 
-/** One query of the default tmux server. No server running is an empty map. */
-export async function snapshotTmuxHops(): Promise<TmuxHops> {
-  const [panes, clients] = await Promise.all([
+export interface TmuxSnapshot {
+  hops: TmuxHops;
+  /** Pane root pid -> tmux session id (`$3`). */
+  panes: Map<number, string>;
+  /** Attached clients: pid and the session id each shows. */
+  clients: { pid: number; sessionId: string }[];
+  /** Session id -> session name. */
+  sessions: Map<string, string>;
+}
+
+export const EMPTY_TMUX: TmuxSnapshot = { hops: new Map(), panes: new Map(), clients: [], sessions: new Map() };
+
+/** One query of the default tmux server. No server running is an empty snapshot. */
+export async function snapshotTmux(): Promise<TmuxSnapshot> {
+  const [panes, clients, sessions] = await Promise.all([
     tmux(["list-panes", "-a", "-F", "#{pane_pid} #{session_id}"]),
     tmux(["list-clients", "-F", "#{client_pid} #{session_id} #{client_activity}"]),
+    // Tab-separated: a session name may contain spaces.
+    tmux(["list-sessions", "-F", "#{session_id}\t#{session_name}"]),
   ]);
-  if (panes === undefined || clients === undefined) {
-    return new Map();
+  if (panes === undefined || clients === undefined || sessions === undefined) {
+    return EMPTY_TMUX;
   }
-  return parseTmuxHops(panes, clients);
+  return parseTmuxSnapshot(panes, clients, sessions);
+}
+
+export function parseTmuxSnapshot(panes: string, clients: string, sessions: string): TmuxSnapshot {
+  const snap: TmuxSnapshot = {
+    hops: parseTmuxHops(panes, clients),
+    panes: new Map(),
+    clients: [],
+    sessions: new Map(),
+  };
+  for (const line of panes.split("\n")) {
+    const m = /^(\d+) (\S+)$/.exec(line.trim());
+    if (m) {
+      snap.panes.set(Number(m[1]), m[2]);
+    }
+  }
+  for (const line of clients.split("\n")) {
+    const m = /^(\d+) (\S+) \d+$/.exec(line.trim());
+    if (m) {
+      snap.clients.push({ pid: Number(m[1]), sessionId: m[2] });
+    }
+  }
+  for (const line of sessions.split("\n")) {
+    const m = /^(\$\d+)\t(.+)$/.exec(line);
+    if (m) {
+      snap.sessions.set(m[1], m[2]);
+    }
+  }
+  return snap;
+}
+
+/**
+ * tmux session-environment variable naming the launcher that created the
+ * session (`claude`, `claude_build`, ...). Written by unified-agent-sdk's
+ * launcher (`TMUX_BACKEND_VAR`) and by the `_cc_session` shell wrapper.
+ */
+export const BACKEND_VAR = "CC_BACKEND";
+
+/** How long an absent record is trusted before asking again (a record can be added later). */
+const ABSENT_RECHECK_MS = 60_000;
+
+/**
+ * Recorded launcher per tmux session id. A present record is set at session
+ * creation and kept for the session's life, so it is read once; an absent one
+ * is re-read at most every `ABSENT_RECHECK_MS`, which keeps the per-session
+ * `show-environment` calls off the 3 s reconcile path.
+ */
+export class BackendRecords {
+  private cache = new Map<string, { launcher?: string; checkedAt: number }>();
+
+  async refresh(sessionIds: Iterable<string>, log: (msg: string) => void, now = Date.now()): Promise<Map<string, string>> {
+    const ids = [...sessionIds];
+    const live = new Set(ids);
+    for (const id of this.cache.keys()) {
+      if (!live.has(id)) {
+        this.cache.delete(id);
+      }
+    }
+    await Promise.all(
+      ids.map(async (id) => {
+        const hit = this.cache.get(id);
+        if (hit && (hit.launcher !== undefined || now - hit.checkedAt < ABSENT_RECHECK_MS)) {
+          return;
+        }
+        try {
+          this.cache.set(id, { launcher: await readBackendRecord(id), checkedAt: now });
+        } catch (e) {
+          // Not cached, so the next reconcile asks again.
+          log(`cannot read ${BACKEND_VAR} of tmux session ${id}: ${(e as Error).message}`);
+        }
+      }),
+    );
+    const out = new Map<string, string>();
+    for (const [id, { launcher }] of this.cache) {
+      if (launcher !== undefined) {
+        out.set(id, launcher);
+      }
+    }
+    return out;
+  }
+}
+
+/**
+ * The recorded launcher, or undefined when the session has none. Other
+ * failures (timeout, session gone mid-query) throw.
+ */
+async function readBackendRecord(sessionId: string): Promise<string | undefined> {
+  try {
+    const out = await tmux(["show-environment", "-t", sessionId, BACKEND_VAR]);
+    return out === undefined ? undefined : parseBackendRecord(out);
+  } catch (e) {
+    // tmux 3.3a: "unknown variable: CC_BACKEND", exit 1.
+    if (/unknown variable/.test((e as Error).message)) {
+      return undefined;
+    }
+    throw e;
+  }
+}
+
+/** `CC_BACKEND=claude_build` -> `claude_build`; a removed (`-CC_BACKEND`) or empty record -> undefined. */
+export function parseBackendRecord(out: string): string | undefined {
+  const m = new RegExp(`^${BACKEND_VAR}=(\\S+)$`).exec(out.trim());
+  return m ? m[1] : undefined;
 }
 
 export function parseTmuxHops(panes: string, clients: string): TmuxHops {

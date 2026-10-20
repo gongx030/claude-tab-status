@@ -2,8 +2,10 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 import { readSessions, sessionDirs } from "./claudeSessions";
 import { Binding, StatusStore } from "./statusStore";
+import { buildRows, SessionRow } from "./sessionList";
+import { SessionTreeProvider } from "./sessionTree";
 import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
-import { snapshotTmuxHops, TmuxHops } from "./tmuxClients";
+import { BackendRecords, EMPTY_TMUX, snapshotTmux, TmuxSnapshot } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
 
 const WATCH_DEBOUNCE_MS = 150;
@@ -31,7 +33,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const watchers = new Map<string, fs.FSWatcher>();
   let dirs: string[] = [];
   let procs: ProcTable | undefined;
-  let hops: TmuxHops = new Map();
+  let tmux: TmuxSnapshot = EMPTY_TMUX;
+  const backends = new BackendRecords();
+  const tree = new SessionTreeProvider();
+  /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client (pruned in reconcileOnce). */
+  const opened = new Map<string, vscode.Terminal>();
   let snapshotPids = ""; // session pids present when `procs` was taken
   let running = false;
   let disposed = false;
@@ -68,9 +74,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   /** @param full re-discover session dirs, re-run ps and re-assert titles (timer, terminal opened). */
   async function reconcileOnce(full: boolean): Promise<void> {
-    if (!config().get<boolean>("enabled", true)) {
+    const titles = config().get<boolean>("enabled", true);
+    if (!titles) {
+      // First, so a failing ps or tmux below cannot keep the titles.
       store.update([], shellTtys(procs)); // resets every title this extension set
-      return;
     }
     if (full || dirs.length === 0) {
       dirs = await sessionDirs(log);
@@ -83,20 +90,34 @@ export function activate(context: vscode.ExtensionContext): void {
     if (full || !procs || pids !== snapshotPids) {
       // A failing tmux query must not stop the tabs outside tmux updating, and
       // keeps the last known hops so tmux tabs hold their titles, not reset.
-      [procs, hops] = await Promise.all([
+      [procs, tmux] = await Promise.all([
         snapshotProcesses(),
-        snapshotTmuxHops().catch((e: Error) => {
+        snapshotTmux().catch((e: Error) => {
           log(`${e.message}; keeping the previous tmux bindings`);
-          return hops;
+          return tmux;
         }),
       ]);
       snapshotPids = pids;
     }
+    const launchers = await backends.refresh(tmux.sessions.keys(), log);
     if (disposed) {
       return;
     }
+    // A pending tab whose client has shown up is now found through `tmux.clients`;
+    // keeping it would point at whatever session that client switched to later.
+    const clientPids = new Set(tmux.clients.map((c) => c.pid));
+    for (const [id, t] of opened) {
+      const pid = shellPids.get(t);
+      if (pid !== undefined && clientPids.has(pid)) {
+        opened.delete(id);
+      }
+    }
+    tree.update(buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values())));
+    if (!titles) {
+      return;
+    }
     const bindings: Binding[] = [];
-    for (const [shellPid, session] of bindTerminals(shellPids.values(), sessions.values(), procs, hops)) {
+    for (const [shellPid, session] of bindTerminals(shellPids.values(), sessions.values(), procs, tmux.hops)) {
       const tty = procs.get(shellPid)?.tty;
       if (tty) {
         bindings.push({ shellPid, tty, session });
@@ -186,13 +207,72 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  /** VS Code terminals attached to `row`'s tmux session, in `row.terminals` order. */
+  function terminalsOf(row: SessionRow): vscode.Terminal[] {
+    const byPid = new Map([...shellPids].map(([t, pid]) => [pid, t]));
+    return row.terminals.map((pid) => byPid.get(pid)).filter((t): t is vscode.Terminal => t !== undefined);
+  }
+
+  /**
+   * Show the tab already attached to the row's tmux session, or open one.
+   * A tab opened here counts as attached before its client shows up in the
+   * next tmux snapshot, so a double click does not open two.
+   */
+  function openSession(clicked?: SessionRow): void {
+    if (!clicked) {
+      return;
+    }
+    const row = tree.row(clicked.tmuxId) ?? clicked;
+    const pending = opened.get(row.tmuxId);
+    const existing = terminalsOf(row)[0] ?? (pending && vscode.window.terminals.includes(pending) ? pending : undefined);
+    if (existing) {
+      existing.show();
+      return;
+    }
+    const terminal = vscode.window.createTerminal({
+      name: row.tmuxName,
+      shellPath: "tmux",
+      // By id: exact, and unaffected by a later rename of the session.
+      shellArgs: ["attach-session", "-t", row.tmuxId],
+      // tmux refuses to attach from inside another tmux client.
+      env: { TMUX: null, TMUX_PANE: null },
+    });
+    opened.set(row.tmuxId, terminal);
+    terminal.show();
+    log(`opened a terminal attached to tmux session ${row.tmuxId} (${row.tmuxName})`);
+  }
+
+  /** Keep the active (else the first) tab attached to the session; close the others. */
+  function closeDuplicates(clicked?: SessionRow): void {
+    const row = clicked && (tree.row(clicked.tmuxId) ?? clicked);
+    if (!row) {
+      return;
+    }
+    const tabs = terminalsOf(row);
+    const keep = tabs.find((t) => t === vscode.window.activeTerminal) ?? tabs[0];
+    for (const t of tabs) {
+      if (t !== keep) {
+        t.dispose();
+      }
+    }
+  }
+
   context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("claudeTabStatus.sessions", tree),
+    vscode.commands.registerCommand("claudeTabStatus.openSession", openSession),
+    vscode.commands.registerCommand("claudeTabStatus.closeDuplicateTabs", closeDuplicates),
+    vscode.commands.registerCommand("claudeTabStatus.refreshSessions", () => reconcile(true)),
     vscode.window.onDidOpenTerminal(async (t) => {
       await track(t);
       void reconcile(true);
     }),
     vscode.window.onDidCloseTerminal((t) => {
       shellPids.delete(t);
+      for (const [id, o] of opened) {
+        if (o === t) {
+          opened.delete(id);
+        }
+      }
       void reconcile(false);
     }),
     vscode.window.onDidChangeActiveTerminal(() => void reconcile(false)),
