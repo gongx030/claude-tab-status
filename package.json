@@ -2,7 +2,7 @@
   "name": "claude-tab-status",
   "displayName": "Claude Tab Status",
   "description": "Shows each Claude Code session's name and status (working / waiting / idle) in its VS Code terminal tab, and lists tmux-hosted sessions in a sidebar.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "gongx030",
   "license": "MIT",
   "repository": {
@@ -28,7 +28,7 @@
         {
           "id": "claudeSessions",
           "title": "Claude Sessions",
-          "icon": "media/sessions.svg"
+          "icon": "$(terminal)"
         }
       ]
     },
