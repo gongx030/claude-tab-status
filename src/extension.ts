@@ -437,15 +437,13 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const { name, status, sessionId } = row.session;
+    // The menu item is greyed out unless idle (package.json enablement); the
+    // row may still be a tick stale, so check the current state too.
     if (status !== "idle") {
-      const choice = await vscode.window.showWarningMessage(
-        `"${name}" is ${status ?? "in an unknown state"}. Clearing it interrupts what it is doing and discards its context.`,
-        { modal: true },
-        "Clear",
+      void vscode.window.showInformationMessage(
+        `"${name}" is ${status ?? "in an unknown state"}; Clear Context needs an idle session.`,
       );
-      if (choice !== "Clear") {
-        return;
-      }
+      return;
     }
     try {
       await typeCommand(row, "/clear");
