@@ -95,7 +95,8 @@ function runningItem(row: SessionRow): vscode.TreeItem {
     ...(session.cwd ? [`directory: ${session.cwd}`] : []),
     `Claude pid: ${session.pid}`,
   ].join("\n");
-  item.contextValue = row.terminals.length > 1 ? "claudeSession.duplicate" : "claudeSession";
+  // claudeSession.<status>[.duplicate]: package.json menus key on both parts.
+  item.contextValue = `claudeSession.${session.status ?? "unknown"}${row.terminals.length > 1 ? ".duplicate" : ""}`;
   item.command = { command: "claudeTabStatus.openSession", title: "Open in Terminal", arguments: [{ kind: "running", row }] };
   return item;
 }
