@@ -2,7 +2,7 @@
   "name": "claude-tab-status",
   "displayName": "Claude Tab Status",
   "description": "Shows each Claude Code session's name and status (working / waiting / idle) in its VS Code terminal tab, and lists tmux-hosted sessions in a sidebar.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "gongx030",
   "license": "MIT",
   "repository": {
@@ -68,6 +68,11 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "claudeTabStatus.clearSession",
+        "title": "Clear Context",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "claudeTabStatus.resumeSession",
         "title": "Resume",
         "icon": "$(play)"
@@ -111,9 +116,14 @@
           "group": "1_session@2"
         },
         {
-          "command": "claudeTabStatus.stopSession",
+          "command": "claudeTabStatus.clearSession",
           "when": "view == claudeTabStatus.sessions && viewItem =~ /^claudeSession/",
           "group": "2_lifecycle@1"
+        },
+        {
+          "command": "claudeTabStatus.stopSession",
+          "when": "view == claudeTabStatus.sessions && viewItem =~ /^claudeSession/",
+          "group": "2_lifecycle@2"
         },
         {
           "command": "claudeTabStatus.resumeSession",
@@ -137,6 +147,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "claudeTabStatus.clearSession",
+          "when": "false"
+        },
         {
           "command": "claudeTabStatus.stopSession",
           "when": "false"
