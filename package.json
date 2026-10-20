@@ -61,6 +61,24 @@
         "command": "claudeTabStatus.refreshSessions",
         "title": "Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeTabStatus.stopSession",
+        "title": "Stop Session",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "claudeTabStatus.resumeSession",
+        "title": "Resume",
+        "icon": "$(play)"
+      },
+      {
+        "command": "claudeTabStatus.resumeSessionWith",
+        "title": "Resume with Backend…"
+      },
+      {
+        "command": "claudeTabStatus.forgetSession",
+        "title": "Forget"
       }
     ],
     "menus": {
@@ -81,9 +99,60 @@
           "command": "claudeTabStatus.closeDuplicateTabs",
           "when": "view == claudeTabStatus.sessions && viewItem == claudeSession.duplicate",
           "group": "inline"
+        },
+        {
+          "command": "claudeTabStatus.openSession",
+          "when": "view == claudeTabStatus.sessions && viewItem =~ /^claudeSession/",
+          "group": "1_session@1"
+        },
+        {
+          "command": "claudeTabStatus.closeDuplicateTabs",
+          "when": "view == claudeTabStatus.sessions && viewItem == claudeSession.duplicate",
+          "group": "1_session@2"
+        },
+        {
+          "command": "claudeTabStatus.stopSession",
+          "when": "view == claudeTabStatus.sessions && viewItem =~ /^claudeSession/",
+          "group": "2_lifecycle@1"
+        },
+        {
+          "command": "claudeTabStatus.resumeSession",
+          "when": "view == claudeTabStatus.sessions && viewItem == claudeStopped",
+          "group": "inline"
+        },
+        {
+          "command": "claudeTabStatus.resumeSession",
+          "when": "view == claudeTabStatus.sessions && viewItem == claudeStopped",
+          "group": "1_session@1"
+        },
+        {
+          "command": "claudeTabStatus.resumeSessionWith",
+          "when": "view == claudeTabStatus.sessions && viewItem == claudeStopped",
+          "group": "1_session@2"
+        },
+        {
+          "command": "claudeTabStatus.forgetSession",
+          "when": "view == claudeTabStatus.sessions && viewItem == claudeStopped",
+          "group": "2_lifecycle@1"
         }
       ],
       "commandPalette": [
+        {
+          "command": "claudeTabStatus.stopSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTabStatus.resumeSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTabStatus.resumeSessionWith",
+          "when": "false"
+        },
+        {
+          "command": "claudeTabStatus.forgetSession",
+          "when": "false"
+        },
         {
           "command": "claudeTabStatus.openSession",
           "when": "false"
