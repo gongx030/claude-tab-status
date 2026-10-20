@@ -236,6 +236,8 @@ export function activate(context: vscode.ExtensionContext): void {
       shellArgs: ["attach-session", "-t", row.tmuxId],
       // tmux refuses to attach from inside another tmux client.
       env: { TMUX: null, TMUX_PANE: null },
+      // Beside the other Claude Code tabs, which live in the editor area.
+      location: vscode.TerminalLocation.Editor,
     });
     opened.set(row.tmuxId, terminal);
     terminal.show();

@@ -24,7 +24,7 @@ vcc          claude · waiting · ⚠ open in 2 tabs
 
 Each row shows the session name, the backend, the state, and whether a VS Code
 terminal tab is attached. Clicking a row shows the tab already attached to that
-tmux session, or opens one running `tmux attach-session`, so one session never
+tmux session, or opens one in the editor area running `tmux attach-session`, so one session never
 gets a second tab from the list. A session attached in more than one tab (for
 example by a hand-typed `tmux attach`) is marked ⚠ and offers **Close
 Duplicate Tabs**. Rows cannot be dragged into the terminal panel: VS Code has
