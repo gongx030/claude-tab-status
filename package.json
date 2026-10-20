@@ -1,7 +1,7 @@
 {
   "name": "claude-tab-status",
   "displayName": "Claude Tab Status",
-  "description": "Shows each Claude Code session's name and status (working / waiting / idle) in its VS Code terminal tab.",
+  "description": "Shows each Claude Code session's name and status (working / waiting / idle) in its VS Code terminal tab, and lists tmux-hosted sessions in a sidebar.",
   "version": "0.1.0",
   "publisher": "gongx030",
   "license": "MIT",
@@ -23,6 +23,77 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeSessions",
+          "title": "Claude Sessions",
+          "icon": "media/sessions.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeSessions": [
+        {
+          "id": "claudeTabStatus.sessions",
+          "name": "tmux Sessions"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "claudeTabStatus.sessions",
+        "contents": "No Claude Code session is running in a tmux session that records its backend (CC_BACKEND)."
+      }
+    ],
+    "commands": [
+      {
+        "command": "claudeTabStatus.openSession",
+        "title": "Open in Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "claudeTabStatus.closeDuplicateTabs",
+        "title": "Close Duplicate Tabs",
+        "icon": "$(close-all)"
+      },
+      {
+        "command": "claudeTabStatus.refreshSessions",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeTabStatus.refreshSessions",
+          "when": "view == claudeTabStatus.sessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claudeTabStatus.openSession",
+          "when": "view == claudeTabStatus.sessions && viewItem =~ /^claudeSession/",
+          "group": "inline"
+        },
+        {
+          "command": "claudeTabStatus.closeDuplicateTabs",
+          "when": "view == claudeTabStatus.sessions && viewItem == claudeSession.duplicate",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "claudeTabStatus.openSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeTabStatus.closeDuplicateTabs",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "Claude Tab Status",
       "properties": {

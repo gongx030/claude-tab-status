@@ -13,8 +13,29 @@ The waiting and idle marks are colour emoji because VS Code offers no way to
 colour a tab the extension did not create: `TerminalOptions.color` applies only
 at creation, and the change-color command acts on the active terminal only.
 
-That is all it does. It has no sidebar, notifications, network access or
-telemetry.
+It also adds a **Claude Sessions** view to the activity bar, listing every
+Claude Code session that runs in a tmux session recording its backend:
+
+```text
+disease_kg   build · working · open
+autodev      claude · idle
+vcc          claude · waiting · ⚠ open in 2 tabs
+```
+
+Each row shows the session name, the backend, the state, and whether a VS Code
+terminal tab is attached. Clicking a row shows the tab already attached to that
+tmux session, or opens one running `tmux attach-session`, so one session never
+gets a second tab from the list. A session attached in more than one tab (for
+example by a hand-typed `tmux attach`) is marked ⚠ and offers **Close
+Duplicate Tabs**. Rows cannot be dragged into the terminal panel: VS Code has
+no API for opening a terminal from a drop.
+
+The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
+`claude_build`, ...), written at session creation by unified-agent-sdk's
+launcher and by the `_cc_session` shell wrapper. A tmux session without it is
+not listed.
+
+It has no notifications, network access or telemetry.
 
 ## Install
 
@@ -90,8 +111,10 @@ Diagnostics are written to the **Claude Tab Status** output channel.
 - `sessions/<pid>.json` is an internal Claude Code file (observed in 2.1.281),
   not a documented interface. If its format changes, the extension stops
   updating titles and logs why; it does not show wrong ones.
-- A session running inside tmux is not under a VS Code terminal shell, so it
-  is not labelled.
+- A session in a detached tmux session has no tab to label; it still appears
+  in the sidebar.
+- The sidebar counts tabs in this window only; a tab in another VS Code window
+  attached to the same tmux session is not detected.
 - Linux and macOS only. A session file whose pid now belongs to a process started
   after the session (a recycled pid) is ignored.
 
