@@ -39,6 +39,11 @@ ends. A session that is working or waiting asks for confirmation first (it is
 interrupted with Escape), and one that has not exited after 15 s offers **Force
 Kill** (`tmux kill-session`).
 
+**Clear Context** (same menu) types `/clear` into the session the same way,
+asking first when it is busy, and confirms once Claude Code has started the new
+conversation. The session keeps its name, and unified-agent-sdk resumes a
+name's newest conversation, so restarting it later continues the cleared one.
+
 Every listed session is remembered (name, backend, directory, conversation id),
 so when its tmux session ends, by Stop, `/exit` or a crash, it moves to a
 **Stopped** group instead of vanishing. Clicking a stopped session resumes it on
@@ -59,8 +64,8 @@ It has no notifications, network access or telemetry.
 
 ```bash
 npm install
-npx @vscode/vsce package               # -> claude-tab-status-0.2.0.vsix
-code --install-extension claude-tab-status-0.2.0.vsix
+npx @vscode/vsce package               # -> claude-tab-status-0.3.0.vsix
+code --install-extension claude-tab-status-0.3.0.vsix
 ```
 
 In a Remote-SSH window, run `code --install-extension` from a terminal on the

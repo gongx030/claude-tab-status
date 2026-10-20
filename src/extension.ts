@@ -359,24 +359,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
     try {
-      const pane = paneOf(
-        row.session.pid,
-        (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id}"])) ?? "",
-        procs ?? new Map(),
-      );
-      if (!pane) {
-        throw new Error(`no pane of tmux session ${row.tmuxName} runs Claude pid ${row.session.pid}`);
-      }
-      const keys = async (...args: string[]) => {
-        await runTmux(["send-keys", "-t", pane, ...args]);
-        await sleep(300);
-      };
-      if (status !== "idle") {
-        await keys("Escape");
-      }
-      await keys("C-u");
-      await keys("-l", "/exit");
-      await keys("Enter");
+      await typeCommand(row, "/exit");
     } catch (e) {
       void vscode.window.showErrorMessage(`Could not stop "${name}": ${(e as Error).message}`);
       return;
@@ -411,6 +394,79 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
     void reconcile(true);
+  }
+
+  /**
+   * Type a slash command into the pane running the row's Claude Code, as a
+   * person would. Measured on CC 2.1.295: Escape (sent only to a busy
+   * session) interrupts the turn or dismisses a dialog, and Ctrl-U clears a
+   * half-typed prompt so the command is not appended to it.
+   */
+  async function typeCommand(row: SessionRow, command: string): Promise<void> {
+    const pane = paneOf(
+      row.session.pid,
+      (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id}"])) ?? "",
+      procs ?? new Map(),
+    );
+    if (!pane) {
+      throw new Error(`no pane of tmux session ${row.tmuxName} runs Claude pid ${row.session.pid}`);
+    }
+    const keys = async (...args: string[]) => {
+      await runTmux(["send-keys", "-t", pane, ...args]);
+      await sleep(300);
+    };
+    if (row.session.status !== "idle") {
+      await keys("Escape");
+    }
+    await keys("C-u");
+    await keys("-l", command);
+    await keys("Enter");
+  }
+
+  /** How long Clear Context waits for Claude Code to start the new conversation. */
+  const CLEAR_WAIT_MS = 15_000;
+
+  /**
+   * Run /clear in the session. It keeps its name and starts a new
+   * conversation id, which is the proof the clear happened; unified-agent-sdk
+   * resumes the name's newest conversation, so a restart continues this one.
+   */
+  async function clearSession(node?: SessionNode): Promise<void> {
+    const row = liveRow(node);
+    if (!row) {
+      return;
+    }
+    const { name, status, sessionId } = row.session;
+    if (status !== "idle") {
+      const choice = await vscode.window.showWarningMessage(
+        `"${name}" is ${status ?? "in an unknown state"}. Clearing it interrupts what it is doing and discards its context.`,
+        { modal: true },
+        "Clear",
+      );
+      if (choice !== "Clear") {
+        return;
+      }
+    }
+    try {
+      await typeCommand(row, "/clear");
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not clear "${name}": ${(e as Error).message}`);
+      return;
+    }
+    log(`sent /clear to "${name}" (tmux ${row.tmuxName})`);
+    for (const deadline = Date.now() + CLEAR_WAIT_MS; Date.now() < deadline; ) {
+      await sleep(1000);
+      await reconcile(false);
+      const now = tree.row(row.tmuxId)?.session.sessionId;
+      if (now !== undefined && now !== sessionId) {
+        log(`"${name}" cleared: conversation ${sessionId} -> ${now}`);
+        void vscode.window.showInformationMessage(`Cleared "${name}".`);
+        return;
+      }
+    }
+    void vscode.window.showWarningMessage(
+      `Sent /clear to "${name}", but no new conversation appeared within ${CLEAR_WAIT_MS / 1000} s.`,
+    );
   }
 
   /** False only for tmux's "can't find session" (or no server); other failures throw. */
@@ -513,6 +569,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("claudeTabStatus.openSession", openSession),
     vscode.commands.registerCommand("claudeTabStatus.closeDuplicateTabs", closeDuplicates),
     vscode.commands.registerCommand("claudeTabStatus.stopSession", stopSession),
+    vscode.commands.registerCommand("claudeTabStatus.clearSession", clearSession),
     vscode.commands.registerCommand("claudeTabStatus.resumeSession", (n?: SessionNode) => resumeSession(n)),
     vscode.commands.registerCommand("claudeTabStatus.resumeSessionWith", resumeSessionWith),
     vscode.commands.registerCommand("claudeTabStatus.forgetSession", forgetSession),
