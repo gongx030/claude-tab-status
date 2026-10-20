@@ -59,8 +59,8 @@ It has no notifications, network access or telemetry.
 
 ```bash
 npm install
-npx @vscode/vsce package               # -> claude-tab-status-0.1.0.vsix
-code --install-extension claude-tab-status-0.1.0.vsix
+npx @vscode/vsce package               # -> claude-tab-status-0.2.0.vsix
+code --install-extension claude-tab-status-0.2.0.vsix
 ```
 
 In a Remote-SSH window, run `code --install-extension` from a terminal on the
