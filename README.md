@@ -58,9 +58,13 @@ name's newest conversation, so restarting it later continues the cleared one.
 Every listed session is remembered (name, backend, directory, conversation id),
 so when its tmux session ends, by Stop, `/exit` or a crash, it moves to a
 **Stopped** group instead of vanishing. Clicking a stopped session resumes it on
-its last backend in the editor area, in a tmux session of the same name and
-continuing the same conversation (`unified-agent-launch <backend> --session
-<name> --cwd <directory> -r <conversation id>`). **Resume with Backend…** picks
+its last backend in the editor area: `unified-agent-launch <backend> --session
+<name> --cwd <directory>` reopens tmux session `<name>` and continues that
+name's newest conversation in that directory. It runs the launcher directly,
+not a `~/.bashrc` wrapper, so anything a wrapper adds beyond `cd` and the
+launcher is not applied. A session whose name is not a valid tmux name (or
+has no recorded directory) is not resumed; the error gives the
+`claude -r <conversation id>` to run by hand. **Resume with Backend…** picks
 another backend from `unified-agent-launch --list`, which is how a session
 switches backend. **Forget** removes it from the list.
 
