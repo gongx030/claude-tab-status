@@ -66,7 +66,10 @@ launcher is not applied. A session whose name is not a valid tmux name (or
 has no recorded directory) is not resumed; the error gives the
 `claude -r <conversation id>` to run by hand. **Resume with Backend…** picks
 another backend from `unified-agent-launch --list-json`, which is how a session
-switches backend. **Forget** removes it from the list.
+switches backend. **Change Folder…** sets the directory the next Resume
+starts in. A conversation is filed under the directory it ran in, so it does
+not follow: Resume continues the name's newest conversation in the new
+directory, else starts a new one. **Forget** removes it from the list.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's
