@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import { readSessions, sessionDirs } from "./claudeSessions";
 import {
   Backend,
+  backendForRecord,
   invalidSessionName,
   LAUNCHER_BIN,
   launchCommand,
@@ -547,7 +548,7 @@ export function activate(context: vscode.ExtensionContext): void {
         { location: vscode.ProgressLocation.Notification, title: "Listing backends…" },
         () =>
           new Promise<string>((resolve, reject) =>
-            execFile(bin, ["--list", "--json"], { timeout: 180_000 }, (err, out, errOut) => {
+            execFile(bin, ["--list-json"], { timeout: 180_000 }, (err, out, errOut) => {
               if (err) {
                 const detail = err.killed ? "timed out after 180 s" : errOut.trim().split("\n").slice(-3).join(" ");
                 reject(new Error(detail || err.message));
@@ -559,7 +560,7 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       const parsed = parseTargets(stdout);
       if (parsed.length === 0) {
-        void vscode.window.showErrorMessage(`${bin} --list printed no backends.`);
+        void vscode.window.showErrorMessage(`${bin} --list-json printed no backends.`);
         return undefined;
       }
       return parsed;
@@ -671,7 +672,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       backend =
-        all.find((t) => t.launcher === k.launcher)?.name ??
+        backendForRecord(all, k.launcher) ??
         (await pickBackend(`"${k.name}" last ran on ${k.launcher}, which is not a backend: resume with`));
       if (!backend) {
         return;
@@ -685,7 +686,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const all = await listTargets();
-    const last = all?.find((t) => t.launcher === node.known.launcher)?.name;
+    const last = all && backendForRecord(all, node.known.launcher);
     const backend = await pickBackend(`Resume "${node.known.name}" with backend`, last);
     if (backend) {
       await resumeSession(node, backend);

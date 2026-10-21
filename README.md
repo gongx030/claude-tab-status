@@ -34,7 +34,7 @@ Duplicate Tabs**. Rows cannot be dragged into the terminal panel: VS Code has
 no API for opening a terminal from a drop.
 
 **New Session…** (the `+` in the view's title bar) starts a session from the
-list: pick a backend (from `unified-agent-launch --list`), a name (the
+list: pick a backend (from `unified-agent-launch --list-json`), a name (the
 workspace folder's name by default, suffixed `2`, `3`, ... when taken) and a
 folder. It runs `unified-agent-launch <backend> --session <name> --cwd <folder>`
 in a new editor-area tab, which creates tmux session `<name>` and records its
@@ -65,7 +65,7 @@ not a `~/.bashrc` wrapper, so anything a wrapper adds beyond `cd` and the
 launcher is not applied. A session whose name is not a valid tmux name (or
 has no recorded directory) is not resumed; the error gives the
 `claude -r <conversation id>` to run by hand. **Resume with Backend…** picks
-another backend from `unified-agent-launch --list`, which is how a session
+another backend from `unified-agent-launch --list-json`, which is how a session
 switches backend. **Forget** removes it from the list.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,

@@ -12,13 +12,20 @@ export const LAUNCHER_BIN = "unified-agent-launch";
 /** Where the launcher lives on the hosts this was written for, when it is not on PATH. */
 export const FALLBACK_LAUNCHER = "/cv/data/gongw13/miniforge3/envs/py311c/bin/unified-agent-launch";
 
-/** A launch target from `unified-agent-launch --list`. */
+/** A launch target from `unified-agent-launch --list-json`. */
 export interface Backend {
   /** Backend name the launcher takes, e.g. `claude-build`. */
   name: string;
   description: string;
   /** What the launcher records in `CC_BACKEND` for it, e.g. `claude_build`. */
   launcher: string;
+  /** Other `CC_BACKEND` values meaning this backend, e.g. `claude_max` for `claude`. */
+  aliases: string[];
+}
+
+/** The backend a recorded `CC_BACKEND` value names, matched on its launcher or an alias. */
+export function backendForRecord(targets: Backend[], record: string): string | undefined {
+  return targets.find((t) => t.launcher === record || t.aliases.includes(record))?.name;
 }
 
 /** The `CC_BACKEND` record of `backend`, as the launcher derives it. */
@@ -27,8 +34,8 @@ function launcherOf(backend: string): string {
 }
 
 /**
- * `--list --json` output (`[{backend, label, launcher}]`), else `--list`'s
- * `backend<TAB>label` lines, which a launcher predating `--json` prints.
+ * `--list-json` output (`[{backend, label, launcher, aliases}]`), else
+ * `--list`'s `backend<TAB>label` lines.
  */
 export function parseTargets(stdout: string): Backend[] {
   let raw: unknown;
@@ -44,13 +51,14 @@ export function parseTargets(stdout: string): Backend[] {
         name: t.backend,
         description: typeof t.label === "string" ? t.label : "",
         launcher: typeof t.launcher === "string" ? t.launcher : launcherOf(t.backend),
+        aliases: Array.isArray(t.aliases) ? t.aliases.filter((a: unknown) => typeof a === "string") : [],
       }));
   }
   const targets: Backend[] = [];
   for (const line of stdout.split("\n")) {
     const m = /^(\S+)(?:\s+(.*))?$/.exec(line.trim());
     if (m) {
-      targets.push({ name: m[1], description: (m[2] ?? "").trim(), launcher: launcherOf(m[1]) });
+      targets.push({ name: m[1], description: (m[2] ?? "").trim(), launcher: launcherOf(m[1]), aliases: [] });
     }
   }
   return targets;
@@ -65,12 +73,22 @@ export function invalidSessionName(name: string): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {
     return "Use letters, digits, '-' and '_' only.";
   }
+  // The launcher's rules: a leading "-" reads as a flag, a UUID as a conversation id.
+  if (name.startsWith("-")) {
+    return "A name cannot start with '-'.";
+  }
+  if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(name)) {
+    return "A name cannot look like a conversation id (UUID).";
+  }
   return undefined;
 }
 
 /** `base` folded to a valid session name, suffixed 2, 3, ... until no session in `taken` has it. */
 export function uniqueSessionName(base: string, taken: Set<string>): string {
-  const stem = base.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "claude";
+  let stem = base.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (invalidSessionName(stem)) {
+    stem = "claude";
+  }
   if (!taken.has(stem)) {
     return stem;
   }
@@ -88,12 +106,18 @@ function q(s: string): string {
 
 /**
  * The `bash -c` command that starts or resumes session `name` on `backend`
- * in `cwd`. A failure (e.g. a refused backend) holds the tab open so its
- * message can be read.
+ * in `cwd`. A failure holds the tab open so the launcher's reason, printed
+ * on stderr above, can be read. Exit 3 is a refusal that started nothing
+ * (backend or folder mismatch, conversation already live); anything else is
+ * a usage error or missing tmux.
  */
 export function launchCommand(bin: string, backend: string, name: string, cwd: string): string {
   const argv = [bin, backend, "--session", name, "--cwd", cwd].map(q).join(" ");
-  return `${argv} || { rc=$?; echo; read -rp "exited $rc; Enter to close " _; }`;
+  return (
+    `${argv} || { rc=$?; echo; ` +
+    `if [ $rc -eq 3 ]; then echo "Refused; nothing was started."; else echo "Failed (exit $rc)."; fi; ` +
+    `read -rp "Enter to close " _; }`
+  );
 }
 
 /**
