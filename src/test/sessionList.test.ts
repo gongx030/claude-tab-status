@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { backendLabel, buildRows, paneOf, rememberRows, stoppedSessions } from "../sessionList";
+import { backendLabel, buildRows, paneOf, rememberRows, stoppedSessions, withFolder } from "../sessionList";
 import { parsePs } from "../terminalTracker";
 import { parseBackendRecord, parseTmuxSnapshot } from "../tmuxClients";
 import { ClaudeSessionState } from "../titleFormatter";
@@ -65,6 +65,12 @@ test("a remembered session whose tmux session ended is stopped", () => {
     [["ad_map", "h2", "claude", 1], ["autodev2", "h1", "claude", 1], ["vcc", "h1", "claude_build", 99]],
   );
   assert.deepEqual(stoppedSessions(known, tmux, "h1").map((k) => k.tmuxName), ["autodev2"]);
+
+  // Change Folder edits only that host's entry, and reports a forgotten one.
+  const twin = [...earlier, { ...base, tmuxName: "autodev2", name: "autodev2", host: "h2" }];
+  const moved = withFolder(twin, "h1", "autodev2", "/p/new")!;
+  assert.deepEqual(moved.map((k) => k.cwd), ["/p/new", "/p/autodev", "/p/autodev"]);
+  assert.equal(withFolder(earlier, "h1", "ad_map", "/p/new"), undefined);
 
   assert.equal(paneOf(51, "52 %7\n60 %8\n", procs), "%7");
 });

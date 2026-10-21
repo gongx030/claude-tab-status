@@ -105,6 +105,12 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], host: st
   return [...byName.values()].sort((a, b) => a.tmuxName.localeCompare(b.tmuxName) || a.host.localeCompare(b.host));
 }
 
+/** `known` with the session `tmuxName` on `host` set to resume in `cwd`; undefined if it is not remembered. */
+export function withFolder(known: KnownSession[], host: string, tmuxName: string, cwd: string): KnownSession[] | undefined {
+  const hit = (k: KnownSession) => k.host === host && k.tmuxName === tmuxName;
+  return known.some(hit) ? known.map((k) => (hit(k) ? { ...k, cwd } : k)) : undefined;
+}
+
 /**
  * Remembered sessions whose tmux session no longer exists. One whose tmux
  * session is alive but shows no Claude row (starting, or held on an exit

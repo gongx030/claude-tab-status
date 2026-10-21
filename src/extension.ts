@@ -15,7 +15,7 @@ import {
   uniqueSessionName,
 } from "./launcher";
 import { Binding, StatusStore } from "./statusStore";
-import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions } from "./sessionList";
+import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
 import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
@@ -693,6 +693,61 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /**
+   * Set the folder a stopped session's next Resume starts in. Its
+   * conversation is filed under the old folder and stays there; Resume
+   * continues the name's newest conversation in the new one, else starts one.
+   */
+  async function changeFolder(node?: SessionNode): Promise<void> {
+    if (node?.kind !== "stopped") {
+      return;
+    }
+    const k = node.known;
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      defaultUri: k.cwd ? vscode.Uri.file(k.cwd) : undefined,
+      openLabel: "Resume here",
+      title: `"${k.name}": folder to resume in`,
+    });
+    const dir = uris?.[0]?.fsPath;
+    if (!dir || dir === k.cwd) {
+      return;
+    }
+    // A session resumed while the dialog was open would have its live folder
+    // written back over this one by the next reconcile. "=" matches the name exactly.
+    let running: boolean;
+    try {
+      running = await tmuxSessionExists(`=${k.tmuxName}`);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not check whether "${k.name}" is running: ${(e as Error).message}`);
+      return;
+    }
+    if (running) {
+      void vscode.window.showErrorMessage(`"${k.name}" is running again; change its folder after it stops.`);
+      return;
+    }
+    // Re-read: another window may have forgotten it since.
+    const updated = withFolder(loadKnown(context.globalState.get(KNOWN_KEY)), k.host, k.tmuxName, dir);
+    if (!updated) {
+      void vscode.window.showErrorMessage(`"${k.name}" is no longer in the Stopped list.`);
+      return;
+    }
+    known = updated;
+    try {
+      await saveKnown(true);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not change the folder of "${k.name}": ${(e as Error).message}`);
+      return;
+    }
+    log(`"${k.name}" (tmux ${k.tmuxName}) now resumes in ${dir}, was ${k.cwd ?? "unrecorded"}`);
+    void reconcile(false);
+    void vscode.window.showInformationMessage(
+      `"${k.name}" now resumes in ${dir}.` + (k.cwd ? ` Its conversation in ${k.cwd} does not follow.` : ""),
+    );
+  }
+
   function forgetSession(node?: SessionNode): void {
     if (node?.kind !== "stopped") {
       return;
@@ -714,6 +769,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("claudeTabStatus.clearSession", clearSession),
     vscode.commands.registerCommand("claudeTabStatus.resumeSession", (n?: SessionNode) => resumeSession(n)),
     vscode.commands.registerCommand("claudeTabStatus.resumeSessionWith", resumeSessionWith),
+    vscode.commands.registerCommand("claudeTabStatus.changeFolder", changeFolder),
     vscode.commands.registerCommand("claudeTabStatus.forgetSession", forgetSession),
     vscode.commands.registerCommand("claudeTabStatus.refreshSessions", () => reconcile(true)),
     vscode.commands.registerCommand("claudeTabStatus.newSession", newSession),
