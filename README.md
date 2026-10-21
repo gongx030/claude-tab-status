@@ -33,6 +33,15 @@ example by a hand-typed `tmux attach`) is marked ⚠ and offers **Close
 Duplicate Tabs**. Rows cannot be dragged into the terminal panel: VS Code has
 no API for opening a terminal from a drop.
 
+**New Session…** (the `+` in the view's title bar) starts a session from the
+list: pick a backend (from `unified-agent-launch --list`), a name (the
+workspace folder's name by default, suffixed `2`, `3`, ... when taken) and a
+folder. It runs `unified-agent-launch <backend> --session <name> --cwd <folder>`
+in a new editor-area tab, which creates tmux session `<name>` and records its
+backend, so the session is listed as soon as Claude Code starts. Several
+sessions can share one folder under different names. No `~/.bashrc` function is
+needed.
+
 Right-click a running session for **Stop Session**: the extension clears the
 prompt and sends `/exit`, so Claude Code shuts down cleanly and its tmux session
 ends. A session that is working or waiting asks for confirmation first (it is
@@ -49,16 +58,20 @@ name's newest conversation, so restarting it later continues the cleared one.
 Every listed session is remembered (name, backend, directory, conversation id),
 so when its tmux session ends, by Stop, `/exit` or a crash, it moves to a
 **Stopped** group instead of vanishing. Clicking a stopped session resumes it on
-its last backend in the editor area: through its `~/.bashrc` wrapper when one
-exists (`autodev2 build`), else `<launcher> -r <conversation id>` in its
-directory. **Resume with Backend…** picks another backend from the
-`claude`/`claude_<backend>` functions an interactive bash defines, which is how
-a session switches backend. **Forget** removes it from the list.
+its last backend in the editor area, in a tmux session of the same name and
+continuing the same conversation (`unified-agent-launch <backend> --session
+<name> --cwd <directory> -r <conversation id>`). **Resume with Backend…** picks
+another backend from `unified-agent-launch --list`, which is how a session
+switches backend. **Forget** removes it from the list.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's
-launcher and by the `_cc_session` shell wrapper. A tmux session without it is
-not listed.
+launcher (and by older `~/.bashrc` wrappers). A tmux session without it is not
+listed, so a plain `claude` started in a terminal is not either: start it with
+**New Session…** instead.
+
+The launcher is found through `claudeTabStatus.launcherPath`, else `PATH`, else
+the py311c conda environment.
 
 It has no notifications, network access or telemetry.
 
@@ -66,8 +79,8 @@ It has no notifications, network access or telemetry.
 
 ```bash
 npm install
-npx @vscode/vsce package               # -> claude-tab-status-0.3.2.vsix
-code --install-extension claude-tab-status-0.3.2.vsix
+npx @vscode/vsce package               # -> claude-tab-status-0.4.0.vsix
+code --install-extension claude-tab-status-0.4.0.vsix
 ```
 
 In a Remote-SSH window, run `code --install-extension` from a terminal on the
@@ -149,3 +162,4 @@ Diagnostics are written to the **Claude Tab Status** output channel.
 |---|---|---|
 | `claudeTabStatus.enabled` | `true` | Turning it off resets the titles this extension set |
 | `claudeTabStatus.refreshIntervalMs` | `3000` | Process-table reconcile interval |
+| `claudeTabStatus.launcherPath` | `""` | `unified-agent-launch` that New Session and Resume run; empty: `PATH`, else the py311c environment's |

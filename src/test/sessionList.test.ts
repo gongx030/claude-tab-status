@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { backendLabel, buildRows, paneOf, rememberRows, resumeCommand, stoppedSessions } from "../sessionList";
+import { backendLabel, buildRows, paneOf, rememberRows, stoppedSessions } from "../sessionList";
 import { parsePs } from "../terminalTracker";
 import { parseBackendRecord, parseTmuxSnapshot } from "../tmuxClients";
 import { ClaudeSessionState } from "../titleFormatter";
@@ -48,7 +48,7 @@ test("rows list recorded tmux sessions with the VS Code tabs attached to each", 
   );
 });
 
-test("a remembered session whose tmux session ended is stopped, and resumes through its wrapper", () => {
+test("a remembered session whose tmux session ended is stopped", () => {
   const e = new Date(T0).toString().slice(0, 24);
   const procs = parsePs([`50 1 ? ${e}`, `52 50 pts/9 ${e}`, `51 52 pts/9 ${e}`].join("\n"));
   const tmux = parseTmuxSnapshot("52 $1\n", "", "$1\tvcc\n");
@@ -67,10 +67,4 @@ test("a remembered session whose tmux session ended is stopped, and resumes thro
   assert.deepEqual(stoppedSessions(known, tmux, "h1").map((k) => k.tmuxName), ["autodev2"]);
 
   assert.equal(paneOf(51, "52 %7\n60 %8\n", procs), "%7");
-  assert.equal(
-    resumeCommand(known[1], "claude_codex"),
-    `if declare -F 'autodev2' >/dev/null; then 'autodev2' 'codex';` +
-      ` else export CC_TMUX_DISABLE=0; cd '/p/autodev' && 'claude_codex' -r 'u-2'; fi` +
-      ` || { rc=$?; echo; read -rp "exited $rc; Enter to close " _; }`,
-  );
 });

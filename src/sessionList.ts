@@ -73,7 +73,7 @@ export function buildRows(
 export interface KnownSession {
   tmuxName: string;
   launcher: string;
-  /** Claude Code session name and id; the id resumes a session that has no named wrapper. */
+  /** Claude Code session name and id; Resume continues exactly this conversation id. */
   name: string;
   sessionId: string;
   cwd?: string;
@@ -146,29 +146,4 @@ function selfOrAncestor(pid: number, procs: ProcTable, hit: (pid: number) => boo
 /** `claude_build` -> `build`; the plain launcher stays `claude`. */
 export function backendLabel(launcher: string): string {
   return launcher.startsWith("claude_") ? launcher.slice("claude_".length) : launcher;
-}
-
-/** POSIX single-quoted shell word. */
-function q(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
- * The `bash -ic` command that resumes `k` on `launcher`.
- *
- * A session with a named wrapper in ~/.bashrc (`autodev2`) resumes through it,
- * taking the backend word `_cc_session` reads (`autodev2 build`), so it comes
- * back in its own named tmux session. Without one, the launcher function
- * resumes the exact conversation id from the session's directory. A failure
- * (e.g. a refused backend) holds the tab open so its message can be read.
- */
-export function resumeCommand(k: KnownSession, launcher: string): string {
-  const word = launcher === "claude" ? "" : ` ${q(backendLabel(launcher))}`;
-  // CC_TMUX_DISABLE=0: ~/.bashrc defaults it to 1, which would resume outside
-  // tmux, where the session never shows as running again.
-  const direct = `export CC_TMUX_DISABLE=0; ${k.cwd ? `cd ${q(k.cwd)} && ` : ""}${q(launcher)} -r ${q(k.sessionId)}`;
-  return (
-    `if declare -F ${q(k.tmuxName)} >/dev/null; then ${q(k.tmuxName)}${word}; else ${direct}; fi` +
-    ` || { rc=$?; echo; read -rp "exited $rc; Enter to close " _; }`
-  );
 }

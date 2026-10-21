@@ -1,19 +1,21 @@
 import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
+import * as path from "path";
 import * as vscode from "vscode";
 import { readSessions, sessionDirs } from "./claudeSessions";
-import { Binding, StatusStore } from "./statusStore";
 import {
-  backendLabel,
-  buildRows,
-  KnownSession,
-  paneOf,
-  rememberRows,
-  resumeCommand,
-  SessionRow,
-  stoppedSessions,
-} from "./sessionList";
+  Backend,
+  backendOfLauncher,
+  invalidSessionName,
+  LAUNCHER_BIN,
+  launchCommand,
+  parseTargets,
+  resolveLauncher,
+  uniqueSessionName,
+} from "./launcher";
+import { Binding, StatusStore } from "./statusStore";
+import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions } from "./sessionList";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
 import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
@@ -479,73 +481,178 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
-  /** Resume terminals by tmux session name, so a double click does not start two. */
-  const resuming = new Map<string, vscode.Terminal>();
+  /** Launch terminals by tmux session name, so a double click does not start two. */
+  const launching = new Map<string, vscode.Terminal>();
 
-  function resumeSession(node?: SessionNode, launcher?: string): void {
-    if (node?.kind !== "stopped") {
-      return;
+  function launcherBin(): string | undefined {
+    const bin = resolveLauncher(config().get<string>("launcherPath", ""), process.env.PATH);
+    if (!bin) {
+      void vscode.window.showErrorMessage(
+        `Cannot find ${LAUNCHER_BIN} (unified-agent-sdk). Set claudeTabStatus.launcherPath to its path.`,
+      );
     }
-    const k = node.known;
-    const pending = resuming.get(k.tmuxName);
+    return bin;
+  }
+
+  /** Open an editor-area tab running the launcher for tmux session `name`. */
+  function launch(name: string, backend: string, cwd: string, extra: string[] = []): void {
+    const pending = launching.get(name);
     if (pending && vscode.window.terminals.includes(pending)) {
       pending.show();
       return;
     }
+    const bin = launcherBin();
+    if (!bin) {
+      return;
+    }
     const terminal = vscode.window.createTerminal({
-      name: k.tmuxName,
+      name,
       shellPath: "bash",
-      // Interactive, for the launcher functions ~/.bashrc defines.
-      shellArgs: ["-ic", resumeCommand(k, launcher ?? k.launcher)],
-      cwd: k.cwd,
-      env: { TMUX: null, TMUX_PANE: null },
+      // Non-interactive: the launcher needs nothing from ~/.bashrc.
+      shellArgs: ["-c", launchCommand(bin, backend, name, cwd, extra)],
+      cwd,
+      // tmux refuses to start a client inside another tmux client. Claude
+      // Code's own title would overwrite the one this extension writes.
+      env: { TMUX: null, TMUX_PANE: null, CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1" },
       location: vscode.TerminalLocation.Editor,
     });
-    resuming.set(k.tmuxName, terminal);
+    launching.set(name, terminal);
     terminal.show();
-    log(`resuming "${k.name}" (tmux ${k.tmuxName}) on ${launcher ?? k.launcher}`);
+    log(`launching tmux session ${name} on ${backend} in ${cwd}`);
   }
 
-  /** Launcher functions (`claude`, `claude_<backend>`) as an interactive bash defines them. */
-  function listLaunchers(): Promise<string[]> {
-    return new Promise((resolve, reject) => {
-      execFile("bash", ["-ic", "compgen -A function claude"], { timeout: 60_000 }, (err, stdout, stderr) => {
-        // compgen exits 1 when nothing matches: no launchers, not a failure.
-        if (err && !(err.code === 1 && stdout.trim() === "")) {
-          const detail = err.killed ? "timed out after 60 s" : stderr.trim().split("\n").slice(-3).join(" ") || err.message;
-          reject(new Error(detail));
-          return;
-        }
-        resolve([...new Set(stdout.split("\n").map((l) => l.trim()).filter((l) => /^claude(_\w+)?$/.test(l)))].sort());
-      });
+  /** Launch targets, listed once per activation (a Python start on a slow mount). */
+  let targets: Backend[] | undefined;
+
+  async function listTargets(): Promise<Backend[] | undefined> {
+    if (targets) {
+      return targets;
+    }
+    const bin = launcherBin();
+    if (!bin) {
+      return undefined;
+    }
+    try {
+      const stdout = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Listing backends…" },
+        () =>
+          new Promise<string>((resolve, reject) =>
+            execFile(bin, ["--list", "--json"], { timeout: 180_000 }, (err, out, errOut) => {
+              if (err) {
+                const detail = err.killed ? "timed out after 180 s" : errOut.trim().split("\n").slice(-3).join(" ");
+                reject(new Error(detail || err.message));
+              } else {
+                resolve(out);
+              }
+            }),
+          ),
+      );
+      const parsed = parseTargets(stdout);
+      if (parsed.length === 0) {
+        void vscode.window.showErrorMessage(`${bin} --list printed no backends.`);
+        return undefined;
+      }
+      targets = parsed;
+      return parsed;
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not list backends: ${(e as Error).message}`);
+      return undefined;
+    }
+  }
+
+  async function pickBackend(title: string, last?: string): Promise<string | undefined> {
+    const all = await listTargets();
+    if (!all) {
+      return undefined;
+    }
+    const pick = await vscode.window.showQuickPick(
+      all.map((t) => ({
+        label: t.name,
+        description: t.name === last ? `${t.description} (last used)` : t.description,
+      })),
+      { title, placeHolder: last },
+    );
+    return pick?.label;
+  }
+
+  async function newSession(): Promise<void> {
+    const backend = await pickBackend("New Claude session: backend");
+    if (!backend) {
+      return;
+    }
+    const folder = vscode.window.activeTextEditor
+      ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)
+      : undefined;
+    const defaultDir = (folder ?? vscode.workspace.workspaceFolders?.[0])?.uri.fsPath;
+    const taken = new Set([...tmux.sessions.values(), ...known.filter((k) => k.host === HOST).map((k) => k.tmuxName)]);
+    const suggested = uniqueSessionName(path.basename(defaultDir ?? "claude"), taken);
+    const name = await vscode.window.showInputBox({
+      title: "New Claude session: name",
+      prompt: "Also the tmux session name; resuming it later continues its newest conversation.",
+      value: suggested,
+      validateInput: (v) => invalidSessionName(v) ?? (taken.has(v) ? `A session named "${v}" already exists.` : undefined),
     });
+    if (!name) {
+      return;
+    }
+    const choose = "Choose folder…";
+    const dirPick = await vscode.window.showQuickPick(
+      [
+        ...(defaultDir ? [{ label: defaultDir, description: "workspace folder" }] : []),
+        ...(vscode.workspace.workspaceFolders ?? [])
+          .map((f) => f.uri.fsPath)
+          .filter((p) => p !== defaultDir)
+          .map((p) => ({ label: p, description: "workspace folder" })),
+        { label: choose, description: "" },
+      ],
+      { title: `New Claude session "${name}": folder` },
+    );
+    if (!dirPick) {
+      return;
+    }
+    let dir = dirPick.label;
+    if (dir === choose) {
+      const uris = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        defaultUri: defaultDir ? vscode.Uri.file(defaultDir) : undefined,
+        openLabel: "Start session here",
+      });
+      if (!uris?.[0]) {
+        return;
+      }
+      dir = uris[0].fsPath;
+    }
+    launch(name, backend, dir);
+  }
+
+  /**
+   * Resume a stopped session in its own named tmux session, on `backend` or
+   * the one it last ran on, continuing the exact conversation it was showing.
+   */
+  function resumeSession(node?: SessionNode, backend?: string): void {
+    if (node?.kind !== "stopped") {
+      return;
+    }
+    const k = node.known;
+    if (!k.cwd) {
+      void vscode.window.showErrorMessage(`"${k.name}" has no recorded folder to resume in.`);
+      return;
+    }
+    launch(k.tmuxName, backend ?? backendOfLauncher(k.launcher), k.cwd, ["-r", k.sessionId]);
   }
 
   async function resumeSessionWith(node?: SessionNode): Promise<void> {
     if (node?.kind !== "stopped") {
       return;
     }
-    let launchers: string[];
-    try {
-      launchers = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Listing backends…" },
-        listLaunchers,
-      );
-    } catch (e) {
-      void vscode.window.showErrorMessage(`Could not list backends: ${(e as Error).message}`);
-      return;
-    }
-    if (launchers.length === 0) {
-      void vscode.window.showErrorMessage("No claude / claude_<backend> launcher is defined in an interactive bash.");
-      return;
-    }
-    const last = node.known.launcher;
-    const pick = await vscode.window.showQuickPick(
-      launchers.map((l) => ({ label: backendLabel(l), description: l === last ? `${l} (last used)` : l, launcher: l })),
-      { title: `Resume "${node.known.name}" with backend`, placeHolder: backendLabel(last) },
+    const backend = await pickBackend(
+      `Resume "${node.known.name}" with backend`,
+      backendOfLauncher(node.known.launcher),
     );
-    if (pick) {
-      resumeSession(node, pick.launcher);
+    if (backend) {
+      resumeSession(node, backend);
     }
   }
 
@@ -572,13 +679,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("claudeTabStatus.resumeSessionWith", resumeSessionWith),
     vscode.commands.registerCommand("claudeTabStatus.forgetSession", forgetSession),
     vscode.commands.registerCommand("claudeTabStatus.refreshSessions", () => reconcile(true)),
+    vscode.commands.registerCommand("claudeTabStatus.newSession", newSession),
     vscode.window.onDidOpenTerminal(async (t) => {
       await track(t);
       void reconcile(true);
     }),
     vscode.window.onDidCloseTerminal((t) => {
       shellPids.delete(t);
-      for (const pending of [opened, resuming]) {
+      for (const pending of [opened, launching]) {
         for (const [id, o] of pending) {
           if (o === t) {
             pending.delete(id);
@@ -590,6 +698,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidChangeActiveTerminal(() => void reconcile(false)),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("claudeTabStatus")) {
+        targets = undefined; // the launcher may have changed
         restartTimer();
         void reconcile(true);
       }
