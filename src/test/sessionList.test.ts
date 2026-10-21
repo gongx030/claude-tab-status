@@ -67,8 +67,9 @@ test("a remembered session whose tmux session ended is stopped", () => {
   assert.deepEqual(stoppedSessions(known, tmux, "h1").map((k) => k.tmuxName), ["autodev2"]);
 
   // Change Folder edits only that host's entry, and reports a forgotten one.
-  const moved = withFolder(earlier, "h1", "autodev2", "/p/new")!;
-  assert.deepEqual(moved.map((k) => k.cwd), ["/p/new", "/p/autodev"]);
+  const twin = [...earlier, { ...base, tmuxName: "autodev2", name: "autodev2", host: "h2" }];
+  const moved = withFolder(twin, "h1", "autodev2", "/p/new")!;
+  assert.deepEqual(moved.map((k) => k.cwd), ["/p/new", "/p/autodev", "/p/autodev"]);
   assert.equal(withFolder(earlier, "h1", "ad_map", "/p/new"), undefined);
 
   assert.equal(paneOf(51, "52 %7\n60 %8\n", procs), "%7");

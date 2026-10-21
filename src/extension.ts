@@ -715,7 +715,20 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!dir || dir === k.cwd) {
       return;
     }
-    // Re-read: another window may have forgotten or resumed it since.
+    // A session resumed while the dialog was open would have its live folder
+    // written back over this one by the next reconcile. "=" matches the name exactly.
+    let running: boolean;
+    try {
+      running = await tmuxSessionExists(`=${k.tmuxName}`);
+    } catch (e) {
+      void vscode.window.showErrorMessage(`Could not check whether "${k.name}" is running: ${(e as Error).message}`);
+      return;
+    }
+    if (running) {
+      void vscode.window.showErrorMessage(`"${k.name}" is running again; change its folder after it stops.`);
+      return;
+    }
+    // Re-read: another window may have forgotten it since.
     const updated = withFolder(loadKnown(context.globalState.get(KNOWN_KEY)), k.host, k.tmuxName, dir);
     if (!updated) {
       void vscode.window.showErrorMessage(`"${k.name}" is no longer in the Stopped list.`);
