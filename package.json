@@ -2,7 +2,7 @@
   "name": "claude-tab-status",
   "displayName": "Claude Tab Status",
   "description": "Shows each Claude Code session's name and status (working / waiting / idle) in its VS Code terminal tab, and lists tmux-hosted sessions in a sidebar.",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "publisher": "gongx030",
   "license": "MIT",
   "repository": {
@@ -43,10 +43,16 @@
     "viewsWelcome": [
       {
         "view": "claudeTabStatus.sessions",
-        "contents": "No Claude Code session is running in a tmux session that records its backend (CC_BACKEND)."
+        "contents": "No Claude Code session is running in a tmux session that records its backend (CC_BACKEND).\n[New Session…](command:claudeTabStatus.newSession)"
       }
     ],
     "commands": [
+      {
+        "command": "claudeTabStatus.newSession",
+        "title": "New Session…",
+        "category": "Claude Sessions",
+        "icon": "$(add)"
+      },
       {
         "command": "claudeTabStatus.openSession",
         "title": "Open in Terminal",
@@ -90,9 +96,14 @@
     "menus": {
       "view/title": [
         {
+          "command": "claudeTabStatus.newSession",
+          "when": "view == claudeTabStatus.sessions",
+          "group": "navigation@1"
+        },
+        {
           "command": "claudeTabStatus.refreshSessions",
           "when": "view == claudeTabStatus.sessions",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -191,6 +202,11 @@
           "default": 3000,
           "minimum": 1000,
           "description": "Interval of the process-table reconciliation, in milliseconds."
+        },
+        "claudeTabStatus.launcherPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path of unified-agent-sdk's unified-agent-launch, which New Session and Resume run. Empty: the first on PATH, else the py311c environment's."
         }
       }
     }
