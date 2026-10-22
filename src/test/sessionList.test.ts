@@ -64,7 +64,10 @@ test("a remembered session whose tmux session ended is stopped", () => {
     known.map((k) => [k.tmuxName, k.host, k.launcher, k.lastSeen]),
     [["ad_map", "h2", "claude", 1], ["autodev2", "h1", "claude", 1], ["vcc", "h1", "claude_build", 99]],
   );
-  assert.deepEqual(stoppedSessions(known, tmux, "h1").map((k) => k.tmuxName), ["autodev2"]);
+  assert.deepEqual(stoppedSessions(known, tmux, "h1", rows).map((k) => k.tmuxName), ["autodev2"]);
+  // A conversation running under another tmux name is not also listed as stopped.
+  const elsewhere = [...known, { ...base, tmuxName: "vcc-old", name: "vcc", sessionId: "vcc", host: "h1" }];
+  assert.deepEqual(stoppedSessions(elsewhere, tmux, "h1", rows).map((k) => k.tmuxName), ["autodev2"]);
 
   // Change Folder edits only that host's entry, and reports a forgotten one.
   const twin = [...earlier, { ...base, tmuxName: "autodev2", name: "autodev2", host: "h2" }];

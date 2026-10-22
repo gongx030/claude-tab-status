@@ -114,11 +114,15 @@ export function withFolder(known: KnownSession[], host: string, tmuxName: string
 /**
  * Remembered sessions whose tmux session no longer exists. One whose tmux
  * session is alive but shows no Claude row (starting, or held on an exit
- * message) is neither running nor stopped, and is left out.
+ * message) is neither running nor stopped, and is left out. So is one whose
+ * conversation is running under another tmux name (same id, or same name in
+ * the same folder): Resume would only be refused as already open.
  */
-export function stoppedSessions(known: KnownSession[], tmux: TmuxSnapshot, host: string): KnownSession[] {
+export function stoppedSessions(known: KnownSession[], tmux: TmuxSnapshot, host: string, rows: SessionRow[]): KnownSession[] {
   const alive = new Set(tmux.sessions.values());
-  return known.filter((k) => k.host === host && !alive.has(k.tmuxName));
+  const running = (k: KnownSession) =>
+    rows.some((r) => r.session.sessionId === k.sessionId || (r.session.name === k.name && r.session.cwd === k.cwd));
+  return known.filter((k) => k.host === host && !alive.has(k.tmuxName) && !running(k));
 }
 
 /** The pane (`%7`) whose root process is `pid` or one of its ancestors, from `list-panes -F "#{pane_pid} #{pane_id}"`. */
