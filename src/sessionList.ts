@@ -6,8 +6,14 @@ import { TmuxSnapshot } from "./tmuxClients";
 export interface SessionRow {
   tmuxId: string;
   tmuxName: string;
-  /** Recorded launcher, e.g. `claude` or `claude_build`. */
-  launcher: string;
+  /**
+   * Launcher, e.g. `claude` or `claude_build`: the tmux session's
+   * `CC_BACKEND` record, else the one inferred from the Claude process's
+   * config dir; undefined when neither is known.
+   */
+  launcher: string | undefined;
+  /** True when `launcher` is not a `CC_BACKEND` record (inferred, or unknown). */
+  unrecorded: boolean;
   session: ClaudeSessionState;
   /** Shell pids of the VS Code terminals attached to this tmux session; more than one is a duplicate. */
   terminals: number[];
@@ -17,9 +23,9 @@ export interface SessionRow {
 const MAX_DEPTH = 64;
 
 /**
- * Rows for every tmux session that has a backend record and a live Claude
- * Code session in one of its panes. A session without a record was not
- * created by a launcher that writes one, and is left out.
+ * Rows for every tmux session with a live Claude Code session in one of its
+ * panes, recorded backend or not: `inferred` (Claude pid -> launcher) names
+ * the launcher of a tmux session without a `CC_BACKEND` record.
  *
  * With several Claude sessions in one tmux session, the most recently
  * updated one names the row.
@@ -30,6 +36,7 @@ export function buildRows(
   tmux: TmuxSnapshot,
   launchers: Map<string, string>,
   shellPids: Set<number>,
+  inferred: Map<number, string> = new Map(),
 ): SessionRow[] {
   const byTmux = new Map<string, ClaudeSessionState>();
   for (const session of sessions) {
@@ -38,7 +45,7 @@ export function buildRows(
     }
     const pane = selfOrAncestor(session.pid, procs, (pid) => tmux.panes.has(pid));
     const tmuxId = pane === undefined ? undefined : tmux.panes.get(pane);
-    if (tmuxId === undefined || !launchers.has(tmuxId)) {
+    if (tmuxId === undefined) {
       continue;
     }
     const current = byTmux.get(tmuxId);
@@ -58,10 +65,12 @@ export function buildRows(
         terminals.push(shell);
       }
     }
+    const recorded = launchers.get(tmuxId);
     rows.push({
       tmuxId,
       tmuxName: tmux.sessions.get(tmuxId) ?? tmuxId,
-      launcher: launchers.get(tmuxId)!,
+      launcher: recorded ?? inferred.get(session.pid),
+      unrecorded: recorded === undefined,
       session,
       terminals,
     });
@@ -72,7 +81,8 @@ export function buildRows(
 /** What is remembered about a listed session so it can be resumed after its tmux session ends. */
 export interface KnownSession {
   tmuxName: string;
-  launcher: string;
+  /** Last known launcher (recorded or inferred); undefined when it never was known, and Resume asks. */
+  launcher?: string;
   /** Claude Code session name and id; Resume continues exactly this conversation id. */
   name: string;
   sessionId: string;
@@ -92,10 +102,11 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], host: st
   const key = (k: { host: string; tmuxName: string }) => `${k.host}\0${k.tmuxName}`;
   const byName = new Map(known.map((k) => [key(k), k]));
   for (const r of rows) {
-    byName.set(key({ host, tmuxName: r.tmuxName }), {
+    const k = key({ host, tmuxName: r.tmuxName });
+    byName.set(k, {
       host,
       tmuxName: r.tmuxName,
-      launcher: r.launcher,
+      launcher: r.launcher ?? byName.get(k)?.launcher,
       name: r.session.name,
       sessionId: r.session.sessionId,
       cwd: r.session.cwd,
@@ -153,7 +164,10 @@ function selfOrAncestor(pid: number, procs: ProcTable, hit: (pid: number) => boo
   return undefined;
 }
 
-/** `claude_build` -> `build`; the plain launcher stays `claude`. */
-export function backendLabel(launcher: string): string {
+/** `claude_build` -> `build`; the plain launcher stays `claude`; an unknown one is `unrecorded`. */
+export function backendLabel(launcher: string | undefined): string {
+  if (launcher === undefined) {
+    return "unrecorded";
+  }
   return launcher.startsWith("claude_") ? launcher.slice("claude_".length) : launcher;
 }

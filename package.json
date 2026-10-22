@@ -43,7 +43,7 @@
     "viewsWelcome": [
       {
         "view": "claudeTabStatus.sessions",
-        "contents": "No Claude Code session is running in a tmux session that records its backend (CC_BACKEND).\n[New Session…](command:claudeTabStatus.newSession)"
+        "contents": "No Claude Code session is running in a tmux session.\n[New Session…](command:claudeTabStatus.newSession)"
       }
     ],
     "commands": [

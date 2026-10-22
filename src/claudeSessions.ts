@@ -147,3 +147,34 @@ export async function readSessions(dirs: string[], log: Log): Promise<SessionSca
   }
   return scan;
 }
+
+/**
+ * The config dir a Claude Code process runs with, from its NUL-separated
+ * environment block: `CLAUDE_CONFIG_DIR`, else Claude Code's default
+ * `$HOME/.claude` (`home` when the block has no HOME).
+ */
+export function configDirOfEnviron(environ: string, home: string): string {
+  let dir: string | undefined;
+  for (const kv of environ.split("\0")) {
+    if (kv.startsWith("CLAUDE_CONFIG_DIR=") && kv.length > "CLAUDE_CONFIG_DIR=".length) {
+      dir = kv.slice("CLAUDE_CONFIG_DIR=".length);
+    } else if (kv.startsWith("HOME=") && kv.length > "HOME=".length) {
+      home = kv.slice("HOME=".length);
+    }
+  }
+  return dir ?? path.join(home, ".claude");
+}
+
+/**
+ * Config dir of the live process `pid`, read from `/proc/<pid>/environ`
+ * (Linux, same user); undefined where that cannot be read (macOS, another
+ * user's process). The session file's own dir cannot stand in for it:
+ * backends commonly share one `sessions/` dir through a symlink.
+ */
+export async function processConfigDir(pid: number, home: string = os.homedir()): Promise<string | undefined> {
+  try {
+    return configDirOfEnviron(await fsp.readFile(`/proc/${pid}/environ`, "utf8"), home);
+  } catch {
+    return undefined;
+  }
+}

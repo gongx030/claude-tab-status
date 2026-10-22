@@ -27,7 +27,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<SessionNode>
     this.rows = rows;
     this.stopped = stopped;
     const shown = JSON.stringify([
-      rows.map((r) => [r.tmuxId, r.tmuxName, r.launcher, r.session.name, r.session.status, r.session.cwd, r.terminals.length]),
+      rows.map((r) => [r.tmuxId, r.tmuxName, r.launcher, r.unrecorded, r.session.name, r.session.status, r.session.cwd, r.terminals.length]),
       stopped.map((k) => [k.tmuxName, k.launcher, k.name, k.cwd]),
     ]);
     if (shown !== this.shown) {
@@ -80,7 +80,8 @@ function runningItem(row: SessionRow): vscode.TreeItem {
   const { session } = row;
   const item = new vscode.TreeItem(session.name, vscode.TreeItemCollapsibleState.None);
   item.id = `running:${row.tmuxId}`;
-  const parts = [backendLabel(row.launcher), session.status ?? "unknown"];
+  const backend = row.unrecorded && row.launcher !== undefined ? `${backendLabel(row.launcher)} (inferred)` : backendLabel(row.launcher);
+  const parts = [backend, session.status ?? "unknown"];
   if (row.terminals.length === 1) {
     parts.push("open");
   } else if (row.terminals.length > 1) {
@@ -91,7 +92,11 @@ function runningItem(row: SessionRow): vscode.TreeItem {
   item.tooltip = [
     session.name,
     `tmux session: ${row.tmuxName}`,
-    `launcher: ${row.launcher}`,
+    !row.unrecorded
+      ? `launcher: ${row.launcher}`
+      : row.launcher !== undefined
+        ? `launcher: ${row.launcher} (inferred from Claude's config dir; the tmux session has no CC_BACKEND record)`
+        : "launcher: unrecorded (no CC_BACKEND record, and Claude's config dir does not name one)",
     ...(session.cwd ? [`directory: ${session.cwd}`] : []),
     `Claude pid: ${session.pid}`,
   ].join("\n");
@@ -109,7 +114,7 @@ function stoppedItem(known: KnownSession): vscode.TreeItem {
   item.tooltip = [
     known.name,
     `tmux session: ${known.tmuxName} (not running)`,
-    `last backend: ${known.launcher}`,
+    `last backend: ${known.launcher ?? "unrecorded"}`,
     ...(known.cwd ? [`directory: ${known.cwd}`] : []),
     `last seen: ${new Date(known.lastSeen).toLocaleString()}`,
   ].join("\n");
