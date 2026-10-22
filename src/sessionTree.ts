@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { backendLabel, KnownSession, SessionRow } from "./sessionList";
+import { backendLabel, KnownSession, SessionRow, stoppedDescription } from "./sessionList";
 import { ClaudeStatus } from "./titleFormatter";
 
 const STATUS_ICON: Record<ClaudeStatus, vscode.ThemeIcon> = {
@@ -107,7 +107,7 @@ function runningItem(row: SessionRow): vscode.TreeItem {
 function stoppedItem(known: KnownSession): vscode.TreeItem {
   const item = new vscode.TreeItem(known.name, vscode.TreeItemCollapsibleState.None);
   item.id = `stopped:${known.tmuxName}`;
-  item.description = backendLabel(known.launcher);
+  item.description = stoppedDescription(known);
   item.iconPath = STOPPED_ICON;
   item.tooltip = [
     known.name,

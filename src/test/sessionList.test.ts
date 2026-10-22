@@ -2,7 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { configDirOfEnviron } from "../claudeSessions";
 import { launcherOfConfigDir } from "../launcher";
-import { backendLabel, buildRows, paneOf, rememberRows, stoppedSessions, withFolder } from "../sessionList";
+import { backendLabel, buildRows, paneOf, rememberRows, stoppedDescription, stoppedSessions, withFolder } from "../sessionList";
 import { parsePs } from "../terminalTracker";
 import { parseBackendRecord, parseTmuxSnapshot } from "../tmuxClients";
 import { ClaudeSessionState } from "../titleFormatter";
@@ -25,6 +25,12 @@ test("tmux output parses into panes, clients, session names and backend records"
   assert.equal(backendLabel("claude_build"), "build");
   assert.equal(backendLabel("claude"), "claude");
   assert.equal(backendLabel(undefined), "unrecorded");
+
+  // A Stopped row names its tmux session only when that is not the row's label,
+  // so two entries that ran the same session name are told apart.
+  const stopped = { name: "vcc", sessionId: "u-1", host: "h1", lastSeen: 0, launcher: "claude_build" };
+  assert.equal(stoppedDescription({ ...stopped, tmuxName: "vcc" }), "build");
+  assert.equal(stoppedDescription({ ...stopped, tmuxName: "vcc2" }), "build · vcc2");
 
   // An unrecorded session's launcher, from its Claude process's config dir.
   assert.equal(configDirOfEnviron("HOME=/h\0CLAUDE_CONFIG_DIR=/h/.claude-build\0", "/x"), "/h/.claude-build");

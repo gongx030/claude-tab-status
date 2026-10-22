@@ -128,9 +128,18 @@ export interface KnownSession {
   lastSeen: number;
 }
 
-/** `known` updated with every running row on `host`, keyed by host and tmux session name. */
+/**
+ * What identifies a remembered session: its tmux session name on its host.
+ * Everything that adds, drops or looks one up keys on this, so a session is
+ * remembered exactly once however often it runs.
+ */
+export function knownKey(k: { host: string; tmuxName: string }): string {
+  return `${k.host}\0${k.tmuxName}`;
+}
+
+/** `known` updated with every running row on `host`, keyed by `knownKey`. */
 export function rememberRows(known: KnownSession[], rows: SessionRow[], host: string, now: number): KnownSession[] {
-  const key = (k: { host: string; tmuxName: string }) => `${k.host}\0${k.tmuxName}`;
+  const key = knownKey;
   const byName = new Map(known.map((k) => [key(k), k]));
   for (const r of rows) {
     const k = key({ host, tmuxName: r.tmuxName });
@@ -213,4 +222,15 @@ export function backendLabel(launcher: string | undefined): string {
     return "unrecorded";
   }
   return launcher.startsWith("claude_") ? launcher.slice("claude_".length) : launcher;
+}
+
+/**
+ * The text beside a Stopped row: its backend, and its tmux session name when
+ * that is not the row's label. Two tmux sessions that ran the same Claude
+ * session name make two entries — the key is the tmux name — and the label
+ * alone renders them identically, so Forget becomes a guess.
+ */
+export function stoppedDescription(known: KnownSession): string {
+  const backend = backendLabel(known.launcher);
+  return known.tmuxName === known.name ? backend : `${backend} · ${known.tmuxName}`;
 }

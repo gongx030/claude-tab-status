@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { processConfigDir, readSessions, SessionScan, sessionDirs } from "./claudeSessions";
+import { processConfigDir, projectDirs, readSessions, SessionScan, sessionDirs } from "./claudeSessions";
 import {
   Backend,
   backendForRecord,
@@ -16,7 +16,8 @@ import {
   uniqueSessionName,
 } from "./launcher";
 import { Binding, StatusStore } from "./statusStore";
-import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
+import { buildRows, knownKey, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
+import { unresumable, UNRESUMABLE_REASON } from "./resumable";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
 import { bindTerminals, isSessionProcess, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BACKEND_VAR, BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
@@ -30,6 +31,8 @@ const KNOWN_KEY = "claudeTabStatus.knownSessions";
 const KNOWN_SAVE_MS = 5 * 60_000;
 /** How long Stop waits for Claude Code to exit before offering a forced kill. */
 const STOP_WAIT_MS = 15_000;
+/** How often the Stopped group is swept for entries that can no longer be resumed. */
+const RETIRE_MS = 10 * 60_000;
 /** Remembered sessions are per host: see KnownSession.host. */
 const HOST = os.hostname();
 
@@ -108,6 +111,41 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     );
   }
+  /** When the Stopped group was last swept; 0 until the first sweep, which runs on the first reconcile. */
+  let retiredAt = 0;
+
+  /**
+   * Drop the Stopped entries that can no longer be resumed — their folder is
+   * gone, or their conversation is not on disk — so the group holds what
+   * Resume can actually reopen and nobody has to Forget a dead row by hand.
+   * Every drop is logged with its reason. Runs at most every `RETIRE_MS`,
+   * since it stats the filesystem and the answer changes slowly.
+   */
+  async function retireUnresumable(stopped: KnownSession[]): Promise<void> {
+    if (stopped.length === 0 || Date.now() - retiredAt < RETIRE_MS) {
+      return;
+    }
+    retiredAt = Date.now();
+    const dirs = await projectDirs(log);
+    const retired = new Map<string, string>();
+    for (const k of stopped) {
+      const why = await unresumable(k, dirs);
+      if (why) {
+        retired.set(knownKey(k), `forgetting stopped session "${k.name}" (tmux ${k.tmuxName}): ${UNRESUMABLE_REASON[why]}`);
+      }
+    }
+    if (retired.size === 0) {
+      return;
+    }
+    // Re-read: another window may have changed the list since the sweep began.
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => !retired.has(knownKey(k)));
+    await saveKnown(true);
+    for (const line of retired.values()) {
+      log(line);
+    }
+    void reconcile(false);
+  }
+
   /** Whether any tmux snapshot has succeeded: until one has, "no tmux session" proves nothing about Stopped. */
   let tmuxSeen = false;
   let snapshotPids = ""; // session pids present when `procs` was taken
@@ -229,7 +267,10 @@ export function activate(context: vscode.ExtensionContext): void {
     // Re-read: another window may have forgotten an entry since.
     known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, HOST, Date.now());
     saveKnown().catch(() => undefined); // logged; retried next reconcile
-    tree.update(rows, tmuxSeen ? stoppedSessions(known, tmux, HOST, rows) : []);
+    const stopped = tmuxSeen ? stoppedSessions(known, tmux, HOST, rows) : [];
+    tree.update(rows, stopped);
+    // Not awaited: the sweep stats the filesystem, and the view must not wait on it.
+    retireUnresumable(stopped).catch((e: Error) => log(`cannot retire stopped sessions: ${e.message}`));
     if (!titles) {
       return;
     }
@@ -832,9 +873,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (node?.kind !== "stopped") {
       return;
     }
-    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter(
-      (k) => !(k.host === node.known.host && k.tmuxName === node.known.tmuxName),
-    );
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => knownKey(k) !== knownKey(node.known));
     saveKnown(true).then(
       () => void reconcile(false),
       (e: Error) => void vscode.window.showErrorMessage(`Could not forget "${node.known.name}": ${e.message}`),
