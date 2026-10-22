@@ -115,11 +115,10 @@ export function activate(context: vscode.ExtensionContext): void {
   let retiredAt = 0;
 
   /**
-   * Drop the Stopped entries that can no longer be resumed — their folder is
-   * gone, or their conversation is not on disk — so the group holds what
-   * Resume can actually reopen and nobody has to Forget a dead row by hand.
-   * Every drop is logged with its reason. Runs at most every `RETIRE_MS`,
-   * since it stats the filesystem and the answer changes slowly.
+   * Drop the Stopped entries that can no longer be resumed (see
+   * `unresumable`), so nobody has to Forget a dead row by hand. Every drop is
+   * logged with its reason. Runs at most every `RETIRE_MS`, since it stats the
+   * filesystem and the answer changes slowly.
    */
   async function retireUnresumable(stopped: KnownSession[]): Promise<void> {
     if (stopped.length === 0 || Date.now() - retiredAt < RETIRE_MS) {
@@ -127,22 +126,36 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     retiredAt = Date.now();
     const dirs = await projectDirs(log);
-    const retired = new Map<string, string>();
+    const retired = new Map<string, { sessionId: string; line: string }>();
     for (const k of stopped) {
       const why = await unresumable(k, dirs);
       if (why) {
-        retired.set(knownKey(k), `forgetting stopped session "${k.name}" (tmux ${k.tmuxName}): ${UNRESUMABLE_REASON[why]}`);
+        retired.set(knownKey(k), {
+          sessionId: k.sessionId,
+          line: `forgetting stopped session "${k.name}" (tmux ${k.tmuxName}): ${UNRESUMABLE_REASON[why]}`,
+        });
       }
     }
     if (retired.size === 0) {
       return;
     }
-    // Re-read: another window may have changed the list since the sweep began.
-    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => !retired.has(knownKey(k)));
-    await saveKnown(true);
-    for (const line of retired.values()) {
-      log(line);
+    // Re-read: another window may have changed the list since the sweep began,
+    // and a tmux name restarted meanwhile now holds a different conversation,
+    // which the verdict was not about.
+    const dropped: string[] = [];
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => {
+      const hit = retired.get(knownKey(k));
+      if (hit?.sessionId !== k.sessionId) {
+        return true;
+      }
+      dropped.push(hit.line);
+      return false;
+    });
+    if (dropped.length === 0) {
+      return;
     }
+    await saveKnown(true);
+    dropped.forEach((line) => log(line));
     void reconcile(false);
   }
 
