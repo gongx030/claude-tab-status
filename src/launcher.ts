@@ -23,14 +23,27 @@ export interface Backend {
   aliases: string[];
 }
 
-/** The backend a recorded `CC_BACKEND` value names, matched on its launcher or an alias. */
-export function backendForRecord(targets: Backend[], record: string): string | undefined {
+/** The backend a recorded `CC_BACKEND` value names, matched on its launcher or an alias; none for no record. */
+export function backendForRecord(targets: Backend[], record: string | undefined): string | undefined {
+  if (record === undefined) {
+    return undefined;
+  }
   return targets.find((t) => t.launcher === record || t.aliases.includes(record))?.name;
 }
 
 /** The `CC_BACKEND` record of `backend`, as the launcher derives it. */
 function launcherOf(backend: string): string {
   return backend.replace(/-/g, "_");
+}
+
+/**
+ * The `CC_BACKEND` record of the backend whose Claude Code config dir is
+ * `configDir`: backend `claude-build` runs with `~/.claude-build`, and plain
+ * `claude` with `~/.claude`. Undefined for a dir not named that way.
+ */
+export function launcherOfConfigDir(configDir: string): string | undefined {
+  const base = path.basename(configDir);
+  return /^\.claude(-[A-Za-z0-9_-]+)?$/.test(base) ? launcherOf(base.slice(1)) : undefined;
 }
 
 /**

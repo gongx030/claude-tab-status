@@ -14,7 +14,7 @@ colour a tab the extension did not create: `TerminalOptions.color` applies only
 at creation, and the change-color command acts on the active terminal only.
 
 It also adds a **Claude Sessions** view to the activity bar, listing every
-Claude Code session that runs in a tmux session recording its backend:
+Claude Code session that runs in a tmux session on the default tmux server:
 
 ```text
 ▾ Running (3)
@@ -73,9 +73,15 @@ directory, else starts a new one. **Forget** removes it from the list.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's
-launcher (and by older `~/.bashrc` wrappers). A tmux session without it is not
-listed, so a plain `claude` started in a terminal is not either: start it with
-**New Session…** instead.
+launcher (and by older `~/.bashrc` wrappers). A tmux session without it (made
+by hand with `tmux new`, then `claude`) is still listed, with the backend
+inferred from Claude's config dir (`CLAUDE_CONFIG_DIR` of the Claude process:
+`~/.claude` is `claude`, `~/.claude-build` is `build`) and shown as
+`build (inferred)`, or as `unrecorded` when the dir names no backend; Resume
+then asks for one. A `claude` started in a terminal outside tmux is not
+listed: start it with **New Session…** instead. A Claude process in a tmux
+pane that is still left out is logged once, with the reason, in the
+"Claude Tab Status" output channel.
 
 The launcher is found through `claudeTabStatus.launcherPath`, else `PATH`, else
 the py311c conda environment.

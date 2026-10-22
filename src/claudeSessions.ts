@@ -111,18 +111,44 @@ export function parseSessionFile(text: string, file: string, log: Log): ClaudeSe
 export interface SessionScan {
   /** Interactive sessions keyed by Claude pid (liveness is checked against `ps`, not here). */
   sessions: Map<number, ClaudeSessionState>;
-  /** Pids whose file exists but could not be read this time; their titles are held, not reset. */
+  /**
+   * Pids whose file exists but could not be read this time; their titles are
+   * held, not reset, and their session from the previous scan is kept for
+   * one poll.
+   */
   unreadable: Set<number>;
+  /** Claude pid -> the sessions dir its file was read from. */
+  dirOf: Map<number, string>;
 }
 
-export async function readSessions(dirs: string[], log: Log): Promise<SessionScan> {
-  const scan: SessionScan = { sessions: new Map(), unreadable: new Set() };
+/**
+ * Read every session file in `dirs`. A file that cannot be read this time
+ * (caught mid-write), or a dir that cannot be listed, keeps the session
+ * `previous` read from it for one poll, so a write in progress does not drop
+ * a live row. A session already held in `previous` is not held again: one
+ * that stays unreadable drops out on the next poll.
+ */
+export async function readSessions(dirs: string[], log: Log, previous?: SessionScan): Promise<SessionScan> {
+  const scan: SessionScan = { sessions: new Map(), unreadable: new Set(), dirOf: new Map() };
+  const hold = (pid: number, dir: string) => {
+    scan.unreadable.add(pid);
+    const last = previous?.unreadable.has(pid) ? undefined : previous?.sessions.get(pid);
+    if (last && !scan.sessions.has(pid)) {
+      scan.sessions.set(pid, last);
+      scan.dirOf.set(pid, dir);
+    }
+  };
   for (const dir of dirs) {
     let entries: string[];
     try {
       entries = await fsp.readdir(dir);
     } catch (e) {
       log(`cannot list ${dir}: ${(e as Error).message}`);
+      for (const [pid, d] of previous?.dirOf ?? []) {
+        if (d === dir) {
+          hold(pid, dir);
+        }
+      }
       continue;
     }
     for (const entry of entries) {
@@ -135,15 +161,47 @@ export async function readSessions(dirs: string[], log: Log): Promise<SessionSca
         const session = parseSessionFile(await fsp.readFile(file, "utf8"), file, log);
         if (session) {
           scan.sessions.set(session.pid, session);
+          scan.dirOf.set(session.pid, dir);
         }
       } catch (e) {
         if (isAbsent(e)) {
           continue; // removed between readdir and read: the session ended
         }
         log(`cannot read ${file}: ${(e as Error).message}`);
-        scan.unreadable.add(Number(m[1]));
+        hold(Number(m[1]), dir);
       }
     }
   }
   return scan;
+}
+
+/**
+ * The config dir a Claude Code process runs with, from its NUL-separated
+ * environment block: `CLAUDE_CONFIG_DIR`, else Claude Code's default
+ * `$HOME/.claude` (`home` when the block has no HOME).
+ */
+export function configDirOfEnviron(environ: string, home: string): string {
+  let dir: string | undefined;
+  for (const kv of environ.split("\0")) {
+    if (kv.startsWith("CLAUDE_CONFIG_DIR=") && kv.length > "CLAUDE_CONFIG_DIR=".length) {
+      dir = kv.slice("CLAUDE_CONFIG_DIR=".length);
+    } else if (kv.startsWith("HOME=") && kv.length > "HOME=".length) {
+      home = kv.slice("HOME=".length);
+    }
+  }
+  return dir ?? path.join(home, ".claude");
+}
+
+/**
+ * Config dir of the live process `pid`, read from `/proc/<pid>/environ`
+ * (Linux, same user); undefined where that cannot be read (macOS, another
+ * user's process). The session file's own dir cannot stand in for it:
+ * backends commonly share one `sessions/` dir through a symlink.
+ */
+export async function processConfigDir(pid: number, home: string = os.homedir()): Promise<string | undefined> {
+  try {
+    return configDirOfEnviron(await fsp.readFile(`/proc/${pid}/environ`, "utf8"), home);
+  } catch {
+    return undefined;
+  }
 }

@@ -19,18 +19,27 @@ export interface TmuxSnapshot {
   hops: TmuxHops;
   /** Pane root pid -> tmux session id (`$3`). */
   panes: Map<number, string>;
+  /**
+   * Pane tty (`/dev/pts/9`) -> tmux session id. Finds the pane of a process
+   * that is no longer a descendant of its pane's root (reparented when an
+   * intermediate parent exited) by its controlling terminal.
+   */
+  paneTtys: Map<string, string>;
   /** Attached clients: pid and the session id each shows. */
   clients: { pid: number; sessionId: string }[];
   /** Session id -> session name. */
   sessions: Map<string, string>;
 }
 
-export const EMPTY_TMUX: TmuxSnapshot = { hops: new Map(), panes: new Map(), clients: [], sessions: new Map() };
+export const EMPTY_TMUX: TmuxSnapshot = { hops: new Map(), panes: new Map(), paneTtys: new Map(), clients: [], sessions: new Map() };
+
+/** A `list-panes` line: `pane_pid session_id [pane_tty]`. */
+const PANE_LINE = /^(\d+) (\S+)(?: (\S+))?$/;
 
 /** One query of the default tmux server. No server running is an empty snapshot. */
 export async function snapshotTmux(): Promise<TmuxSnapshot> {
   const [panes, clients, sessions] = await Promise.all([
-    tmux(["list-panes", "-a", "-F", "#{pane_pid} #{session_id}"]),
+    tmux(["list-panes", "-a", "-F", "#{pane_pid} #{session_id} #{pane_tty}"]),
     tmux(["list-clients", "-F", "#{client_pid} #{session_id} #{client_activity}"]),
     // Tab-separated: a session name may contain spaces.
     tmux(["list-sessions", "-F", "#{session_id}\t#{session_name}"]),
@@ -45,13 +54,17 @@ export function parseTmuxSnapshot(panes: string, clients: string, sessions: stri
   const snap: TmuxSnapshot = {
     hops: parseTmuxHops(panes, clients),
     panes: new Map(),
+    paneTtys: new Map(),
     clients: [],
     sessions: new Map(),
   };
   for (const line of panes.split("\n")) {
-    const m = /^(\d+) (\S+)$/.exec(line.trim());
+    const m = PANE_LINE.exec(line.trim());
     if (m) {
       snap.panes.set(Number(m[1]), m[2]);
+      if (m[3]) {
+        snap.paneTtys.set(m[3], m[2]);
+      }
     }
   }
   for (const line of clients.split("\n")) {
@@ -159,7 +172,7 @@ export function parseTmuxHops(panes: string, clients: string): TmuxHops {
   }
   const hops: TmuxHops = new Map();
   for (const line of panes.split("\n")) {
-    const m = /^(\d+) (\S+)$/.exec(line.trim());
+    const m = PANE_LINE.exec(line.trim());
     const list = m && bySession.get(m[2]);
     if (list) {
       // A pane in grouped sessions is listed once per session: merge them.

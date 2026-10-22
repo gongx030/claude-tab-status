@@ -3,13 +3,14 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { readSessions, sessionDirs } from "./claudeSessions";
+import { processConfigDir, readSessions, SessionScan, sessionDirs } from "./claudeSessions";
 import {
   Backend,
   backendForRecord,
   invalidSessionName,
   LAUNCHER_BIN,
   launchCommand,
+  launcherOfConfigDir,
   parseTargets,
   resolveLauncher,
   uniqueSessionName,
@@ -17,8 +18,8 @@ import {
 import { Binding, StatusStore } from "./statusStore";
 import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
-import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
-import { BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
+import { bindTerminals, isSessionProcess, ProcTable, snapshotProcesses } from "./terminalTracker";
+import { BACKEND_VAR, BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
 
 const WATCH_DEBOUNCE_MS = 150;
@@ -39,7 +40,7 @@ function loadKnown(raw: unknown): KnownSession[] {
   return raw.filter(
     (k): k is KnownSession =>
       typeof k?.tmuxName === "string" &&
-      typeof k.launcher === "string" &&
+      (k.launcher === undefined || typeof k.launcher === "string") &&
       typeof k.name === "string" &&
       typeof k.sessionId === "string" &&
       typeof k.host === "string" &&
@@ -72,7 +73,14 @@ export function activate(context: vscode.ExtensionContext): void {
   let dirs: string[] = [];
   let procs: ProcTable | undefined;
   let tmux: TmuxSnapshot = EMPTY_TMUX;
+  let scan: SessionScan | undefined; // the last read, which holds a session whose file is unreadable
   const backends = new BackendRecords();
+  /** Launcher inferred from each Claude process's config dir, keyed by pid and checked against its start time. */
+  const inferredCache = new Map<number, { startMs?: number; launcher?: string }>();
+  /** Claude pids whose omission from the list was logged; each is logged once, not every reconcile. */
+  const omissionsLogged = new Set<number>();
+  /** tmux session id -> the unrecorded-launcher line last logged for it; logged again only when it changes. */
+  const unrecordedLogged = new Map<string, string>();
   const tree = new SessionTreeProvider();
   /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client (pruned in reconcileOnce). */
   const opened = new Map<string, vscode.Terminal>();
@@ -147,7 +155,8 @@ export function activate(context: vscode.ExtensionContext): void {
       dirs = await sessionDirs(log);
       watchDirs(dirs);
     }
-    const { sessions, unreadable } = await readSessions(dirs, log);
+    scan = await readSessions(dirs, log, scan);
+    const { sessions, unreadable } = scan;
     // A new or reused session pid needs a fresh process table: a cached one
     // could hold the previous owner of that pid.
     const pids = [...sessions.keys()].sort().join(",");
@@ -182,7 +191,41 @@ export function activate(context: vscode.ExtensionContext): void {
         opened.delete(id);
       }
     }
-    const rows = buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values()));
+    const inferred = await inferLaunchers(sessions.keys(), procs);
+    if (disposed) {
+      return;
+    }
+    for (const pid of omissionsLogged) {
+      if (!sessions.has(pid)) {
+        omissionsLogged.delete(pid);
+      }
+    }
+    const rows = buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values()), inferred, (pid, tmuxId, reason) => {
+      if (!omissionsLogged.has(pid)) {
+        omissionsLogged.add(pid);
+        log(`Claude pid ${pid} in tmux session ${tmux.sessions.get(tmuxId) ?? tmuxId} is not listed: ${reason}`);
+      }
+    });
+    const unrecordedIds = new Set(rows.filter((r) => r.unrecorded).map((r) => r.tmuxId));
+    for (const id of unrecordedLogged.keys()) {
+      if (!unrecordedIds.has(id)) {
+        unrecordedLogged.delete(id);
+      }
+    }
+    for (const r of rows) {
+      if (!r.unrecorded) {
+        continue;
+      }
+      const line =
+        `tmux session ${r.tmuxName} has no ${BACKEND_VAR} record; ` +
+        (r.launcher !== undefined
+          ? `launcher ${r.launcher} inferred from the config dir of Claude pid ${r.session.pid}`
+          : `no launcher can be inferred from the config dir of Claude pid ${r.session.pid}`);
+      if (unrecordedLogged.get(r.tmuxId) !== line) {
+        unrecordedLogged.set(r.tmuxId, line);
+        log(line);
+      }
+    }
     // Re-read: another window may have forgotten an entry since.
     known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, HOST, Date.now());
     saveKnown().catch(() => undefined); // logged; retried next reconcile
@@ -202,6 +245,37 @@ export function activate(context: vscode.ExtensionContext): void {
     // Timer ticks re-assert unchanged titles, winning the tab back within one
     // interval if Claude Code (title not disabled) overwrote it.
     store.update(bindings, shellTtys(procs), unreadable, full);
+  }
+
+  /**
+   * Launcher per Claude pid, from its config dir, for tmux sessions without a
+   * `CC_BACKEND` record. A process's environment is fixed at exec, so each
+   * pid is read once per process (a recycled pid has a new start time).
+   */
+  async function inferLaunchers(pids: Iterable<number>, table: ProcTable): Promise<Map<number, string>> {
+    const live = new Set(pids);
+    for (const pid of inferredCache.keys()) {
+      if (!live.has(pid)) {
+        inferredCache.delete(pid);
+      }
+    }
+    await Promise.all(
+      [...live].map(async (pid) => {
+        const startMs = table.get(pid)?.startMs;
+        if (startMs === undefined || inferredCache.get(pid)?.startMs === startMs) {
+          return;
+        }
+        const dir = await processConfigDir(pid);
+        inferredCache.set(pid, { startMs, launcher: dir === undefined ? undefined : launcherOfConfigDir(dir) });
+      }),
+    );
+    const out = new Map<number, string>();
+    for (const [pid, { launcher }] of inferredCache) {
+      if (launcher !== undefined) {
+        out.set(pid, launcher);
+      }
+    }
+    return out;
   }
 
   function shellTtys(table: ProcTable | undefined): Map<number, string> {
@@ -405,11 +479,13 @@ export function activate(context: vscode.ExtensionContext): void {
    * half-typed prompt so the command is not appended to it.
    */
   async function typeCommand(row: SessionRow, command: string): Promise<void> {
-    const pane = paneOf(
-      row.session.pid,
-      (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id}"])) ?? "",
-      procs ?? new Map(),
-    );
+    // Fresh, and checked against the session: keys must never go to a pane
+    // that took over the pid or tty of a Claude that has since died.
+    const [panes, fresh] = await Promise.all([
+      runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id} #{pane_tty}"]),
+      snapshotProcesses(),
+    ]);
+    const pane = isSessionProcess(row.session, fresh) ? paneOf(row.session.pid, panes ?? "", fresh) : undefined;
     if (!pane) {
       throw new Error(`no pane of tmux session ${row.tmuxName} runs Claude pid ${row.session.pid}`);
     }
@@ -673,7 +749,11 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       backend =
         backendForRecord(all, k.launcher) ??
-        (await pickBackend(`"${k.name}" last ran on ${k.launcher}, which is not a backend: resume with`));
+        (await pickBackend(
+          k.launcher === undefined
+            ? `"${k.name}" has no known backend: resume with`
+            : `"${k.name}" last ran on ${k.launcher}, which is not a backend: resume with`,
+        ));
       if (!backend) {
         return;
       }
