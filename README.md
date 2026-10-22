@@ -18,15 +18,15 @@ Claude Code session that runs in a tmux session on the default tmux server:
 
 ```text
 ▾ Running (3)
-    disease_kg   build · working · open
-    autodev      claude · idle
-    vcc          claude · waiting · ⚠ open in 2 tabs
+    disease_kg   build
+    autodev      claude
+    vcc          claude · ⚠ open in 2 tabs
 ▾ Stopped (1)
-    autodev4     build · stopped
+    autodev4     build
 ```
 
-Each row shows the session name, the backend, the state, and whether a VS Code
-terminal tab is attached. Clicking a row shows the tab already attached to that
+Each row shows the session name and the backend; the icon shows the state
+(working, waiting or idle). Clicking a row shows the tab already attached to that
 tmux session, or opens one in the editor area running `tmux attach-session`, so one session never
 gets a second tab from the list. A session attached in more than one tab (for
 example by a hand-typed `tmux attach`) is marked ⚠ and offers **Close

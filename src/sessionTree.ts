@@ -81,16 +81,12 @@ function runningItem(row: SessionRow): vscode.TreeItem {
   const item = new vscode.TreeItem(session.name, vscode.TreeItemCollapsibleState.None);
   item.id = `running:${row.tmuxId}`;
   const backend = row.unrecorded && row.launcher !== undefined ? `${backendLabel(row.launcher)} (inferred)` : backendLabel(row.launcher);
-  const parts = [backend, session.status ?? "unknown"];
-  if (row.terminals.length === 1) {
-    parts.push("open");
-  } else if (row.terminals.length > 1) {
-    parts.push(`⚠ open in ${row.terminals.length} tabs`);
-  }
-  item.description = parts.join(" · ");
+  // The icon carries the status, so the text names only the backend.
+  item.description = row.terminals.length > 1 ? `${backend} · ⚠ open in ${row.terminals.length} tabs` : backend;
   item.iconPath = session.status ? STATUS_ICON[session.status] : new vscode.ThemeIcon("question");
   item.tooltip = [
     session.name,
+    `status: ${session.status ?? "unknown"}`,
     `tmux session: ${row.tmuxName}`,
     !row.unrecorded
       ? `launcher: ${row.launcher}`
@@ -109,7 +105,7 @@ function runningItem(row: SessionRow): vscode.TreeItem {
 function stoppedItem(known: KnownSession): vscode.TreeItem {
   const item = new vscode.TreeItem(known.name, vscode.TreeItemCollapsibleState.None);
   item.id = `stopped:${known.tmuxName}`;
-  item.description = `${backendLabel(known.launcher)} · stopped`;
+  item.description = backendLabel(known.launcher);
   item.iconPath = STOPPED_ICON;
   item.tooltip = [
     known.name,
