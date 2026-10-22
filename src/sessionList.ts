@@ -19,6 +19,9 @@ export interface SessionRow {
   terminals: number[];
 }
 
+/** Why a Claude process in a tmux pane has no row; see `buildRows`. */
+export type Omission = (pid: number, tmuxId: string, reason: string) => void;
+
 /** Bound on every parent walk: guards a malformed table with a ppid cycle. */
 const MAX_DEPTH = 64;
 
@@ -28,7 +31,8 @@ const MAX_DEPTH = 64;
  * the launcher of a tmux session without a `CC_BACKEND` record.
  *
  * With several Claude sessions in one tmux session, the most recently
- * updated one names the row.
+ * updated one names the row. A session file whose pid runs in a pane but
+ * fails the liveness check is reported to `omit`.
  */
 export function buildRows(
   sessions: Iterable<ClaudeSessionState>,
@@ -37,15 +41,24 @@ export function buildRows(
   launchers: Map<string, string>,
   shellPids: Set<number>,
   inferred: Map<number, string> = new Map(),
+  omit: Omission = () => undefined,
 ): SessionRow[] {
   const byTmux = new Map<string, ClaudeSessionState>();
   for (const session of sessions) {
-    if (!isSessionProcess(session, procs)) {
+    const tmuxId = tmuxSessionOf(session.pid, procs, tmux);
+    if (tmuxId === undefined) {
       continue;
     }
-    const pane = selfOrAncestor(session.pid, procs, (pid) => tmux.panes.has(pid));
-    const tmuxId = pane === undefined ? undefined : tmux.panes.get(pane);
-    if (tmuxId === undefined) {
+    if (!isSessionProcess(session, procs)) {
+      const startMs = procs.get(session.pid)?.startMs;
+      omit(
+        session.pid,
+        tmuxId,
+        startMs === undefined
+          ? "ps gave no start time for it"
+          : `its process started at ${new Date(startMs).toISOString()}, after its session file's startedAt ` +
+              `${new Date(session.startedAt).toISOString()} (a recycled pid, or clock skew)`,
+      );
       continue;
     }
     const current = byTmux.get(tmuxId);
@@ -76,6 +89,24 @@ export function buildRows(
     });
   }
   return rows.sort((a, b) => a.tmuxName.localeCompare(b.tmuxName));
+}
+
+/**
+ * The tmux session whose pane runs `pid`: the pane whose root is `pid` or an
+ * ancestor, else the pane on `pid`'s controlling tty (a process reparented
+ * away from its pane's root still has that pane as its terminal). A process
+ * absent from `procs` has ended and is in none.
+ */
+function tmuxSessionOf(pid: number, procs: ProcTable, tmux: TmuxSnapshot): string | undefined {
+  const proc = procs.get(pid);
+  if (!proc) {
+    return undefined;
+  }
+  const pane = selfOrAncestor(pid, procs, (p) => tmux.panes.has(p));
+  if (pane !== undefined) {
+    return tmux.panes.get(pane);
+  }
+  return proc.tty === undefined ? undefined : tmux.paneTtys.get(proc.tty);
 }
 
 /** What is remembered about a listed session so it can be resumed after its tmux session ends. */
@@ -136,17 +167,29 @@ export function stoppedSessions(known: KnownSession[], tmux: TmuxSnapshot, host:
   return known.filter((k) => k.host === host && !alive.has(k.tmuxName) && !running(k));
 }
 
-/** The pane (`%7`) whose root process is `pid` or one of its ancestors, from `list-panes -F "#{pane_pid} #{pane_id}"`. */
+/**
+ * The pane (`%7`) whose root process is `pid` or one of its ancestors, else
+ * the one on `pid`'s controlling tty, from
+ * `list-panes -F "#{pane_pid} #{pane_id} #{pane_tty}"` (the tty is optional).
+ */
 export function paneOf(pid: number, panes: string, procs: ProcTable): string | undefined {
   const byPid = new Map<number, string>();
+  const byTty = new Map<string, string>();
   for (const line of panes.split("\n")) {
-    const m = /^(\d+) (%\d+)$/.exec(line.trim());
+    const m = /^(\d+) (%\d+)(?: (\S+))?$/.exec(line.trim());
     if (m) {
       byPid.set(Number(m[1]), m[2]);
+      if (m[3]) {
+        byTty.set(m[3], m[2]);
+      }
     }
   }
   const root = selfOrAncestor(pid, procs, (p) => byPid.has(p));
-  return root === undefined ? undefined : byPid.get(root);
+  if (root !== undefined) {
+    return byPid.get(root);
+  }
+  const tty = procs.get(pid)?.tty;
+  return tty === undefined ? undefined : byTty.get(tty);
 }
 
 /**

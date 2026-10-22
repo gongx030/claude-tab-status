@@ -79,7 +79,9 @@ inferred from Claude's config dir (`CLAUDE_CONFIG_DIR` of the Claude process:
 `~/.claude` is `claude`, `~/.claude-build` is `build`) and shown as
 `build (inferred)`, or as `unrecorded` when the dir names no backend; Resume
 then asks for one. A `claude` started in a terminal outside tmux is not
-listed: start it with **New Session…** instead.
+listed: start it with **New Session…** instead. A Claude process in a tmux
+pane that is still left out is logged once, with the reason, in the
+"Claude Tab Status" output channel.
 
 The launcher is found through `claudeTabStatus.launcherPath`, else `PATH`, else
 the py311c conda environment.

@@ -68,6 +68,25 @@ test("rows list every tmux session running Claude, recorded or not, with the VS 
   assert.deepEqual(known.map((k) => [k.tmuxName, k.launcher]), [["autodev", "claude"], ["bare", "claude"], ["manual", "claude_codex"], ["vcc", "claude_build"]]);
 });
 
+test("a Claude reparented away from its pane is found by its tty; one in a pane that fails the liveness check is reported", () => {
+  // pane 52 ($1, pts/9) -> claude 51, whose parent exited (now under 1); pane 54 ($2, pts/8) -> 53,
+  // a pid recycled after its session file's startedAt.
+  const e = new Date(T0).toString().slice(0, 24);
+  const late = new Date(T0 + 60_000).toString().slice(0, 24);
+  const procs = parsePs([`50 1 ? ${e}`, `52 50 pts/9 ${e}`, `51 1 pts/9 ${e}`, `54 50 pts/8 ${e}`, `53 54 pts/8 ${late}`].join("\n"));
+  const tmux = parseTmuxSnapshot("52 $1 /dev/pts/9\n54 $2 /dev/pts/8\n", "", "$1\tvcc\n$2\tautodev\n");
+  const omitted: [number, string, string][] = [];
+
+  const rows = buildRows([session(51, "vcc"), session(53, "autodev")], procs, tmux, new Map(), new Set(), new Map(), (pid, id, why) =>
+    omitted.push([pid, id, why]),
+  );
+
+  assert.deepEqual(rows.map((r) => r.tmuxName), ["vcc"]);
+  assert.deepEqual(omitted.map(([pid, id]) => [pid, id]), [[53, "$2"]]);
+  assert.match(omitted[0][2], /after its session file's startedAt/);
+  assert.equal(paneOf(51, "52 %7 /dev/pts/9\n", procs), "%7");
+});
+
 test("a remembered session whose tmux session ended is stopped", () => {
   const e = new Date(T0).toString().slice(0, 24);
   const procs = parsePs([`50 1 ? ${e}`, `52 50 pts/9 ${e}`, `51 52 pts/9 ${e}`].join("\n"));

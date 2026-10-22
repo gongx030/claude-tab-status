@@ -76,6 +76,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const backends = new BackendRecords();
   /** Launcher inferred from each Claude process's config dir, keyed by pid and checked against its start time. */
   const inferredCache = new Map<number, { startMs?: number; launcher?: string }>();
+  /** Claude pids whose omission from the list was logged; each is logged once, not every reconcile. */
+  const omissionsLogged = new Set<number>();
   const tree = new SessionTreeProvider();
   /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client (pruned in reconcileOnce). */
   const opened = new Map<string, vscode.Terminal>();
@@ -189,7 +191,17 @@ export function activate(context: vscode.ExtensionContext): void {
     if (disposed) {
       return;
     }
-    const rows = buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values()), inferred);
+    for (const pid of omissionsLogged) {
+      if (!sessions.has(pid)) {
+        omissionsLogged.delete(pid);
+      }
+    }
+    const rows = buildRows(sessions.values(), procs, tmux, launchers, new Set(shellPids.values()), inferred, (pid, tmuxId, reason) => {
+      if (!omissionsLogged.has(pid)) {
+        omissionsLogged.add(pid);
+        log(`Claude pid ${pid} in tmux session ${tmux.sessions.get(tmuxId) ?? tmuxId} is not listed: ${reason}`);
+      }
+    });
     for (const r of rows) {
       if (r.unrecorded) {
         log(
@@ -455,7 +467,7 @@ export function activate(context: vscode.ExtensionContext): void {
   async function typeCommand(row: SessionRow, command: string): Promise<void> {
     const pane = paneOf(
       row.session.pid,
-      (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id}"])) ?? "",
+      (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id} #{pane_tty}"])) ?? "",
       procs ?? new Map(),
     );
     if (!pane) {
