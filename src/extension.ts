@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { processConfigDir, readSessions, sessionDirs } from "./claudeSessions";
+import { processConfigDir, readSessions, SessionScan, sessionDirs } from "./claudeSessions";
 import {
   Backend,
   backendForRecord,
@@ -73,6 +73,7 @@ export function activate(context: vscode.ExtensionContext): void {
   let dirs: string[] = [];
   let procs: ProcTable | undefined;
   let tmux: TmuxSnapshot = EMPTY_TMUX;
+  let scan: SessionScan | undefined; // the last read, which holds a session whose file is unreadable
   const backends = new BackendRecords();
   /** Launcher inferred from each Claude process's config dir, keyed by pid and checked against its start time. */
   const inferredCache = new Map<number, { startMs?: number; launcher?: string }>();
@@ -152,7 +153,8 @@ export function activate(context: vscode.ExtensionContext): void {
       dirs = await sessionDirs(log);
       watchDirs(dirs);
     }
-    const { sessions, unreadable } = await readSessions(dirs, log);
+    scan = await readSessions(dirs, log, scan);
+    const { sessions, unreadable } = scan;
     // A new or reused session pid needs a fresh process table: a cached one
     // could hold the previous owner of that pid.
     const pids = [...sessions.keys()].sort().join(",");

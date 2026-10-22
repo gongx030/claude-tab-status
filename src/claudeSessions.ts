@@ -111,18 +111,41 @@ export function parseSessionFile(text: string, file: string, log: Log): ClaudeSe
 export interface SessionScan {
   /** Interactive sessions keyed by Claude pid (liveness is checked against `ps`, not here). */
   sessions: Map<number, ClaudeSessionState>;
-  /** Pids whose file exists but could not be read this time; their titles are held, not reset. */
+  /**
+   * Pids whose file exists but could not be read this time; their titles are
+   * held, not reset, and their session from the previous scan is kept.
+   */
   unreadable: Set<number>;
+  /** Claude pid -> the sessions dir its file was read from. */
+  dirOf: Map<number, string>;
 }
 
-export async function readSessions(dirs: string[], log: Log): Promise<SessionScan> {
-  const scan: SessionScan = { sessions: new Map(), unreadable: new Set() };
+/**
+ * Read every session file in `dirs`. A file that cannot be read this time
+ * (caught mid-write), or a dir that cannot be listed, keeps the session
+ * `previous` read from it, so a live session never drops out for one poll.
+ */
+export async function readSessions(dirs: string[], log: Log, previous?: SessionScan): Promise<SessionScan> {
+  const scan: SessionScan = { sessions: new Map(), unreadable: new Set(), dirOf: new Map() };
+  const hold = (pid: number, dir: string) => {
+    scan.unreadable.add(pid);
+    const last = previous?.sessions.get(pid);
+    if (last && !scan.sessions.has(pid)) {
+      scan.sessions.set(pid, last);
+      scan.dirOf.set(pid, dir);
+    }
+  };
   for (const dir of dirs) {
     let entries: string[];
     try {
       entries = await fsp.readdir(dir);
     } catch (e) {
       log(`cannot list ${dir}: ${(e as Error).message}`);
+      for (const [pid, d] of previous?.dirOf ?? []) {
+        if (d === dir) {
+          hold(pid, dir);
+        }
+      }
       continue;
     }
     for (const entry of entries) {
@@ -135,13 +158,14 @@ export async function readSessions(dirs: string[], log: Log): Promise<SessionSca
         const session = parseSessionFile(await fsp.readFile(file, "utf8"), file, log);
         if (session) {
           scan.sessions.set(session.pid, session);
+          scan.dirOf.set(session.pid, dir);
         }
       } catch (e) {
         if (isAbsent(e)) {
           continue; // removed between readdir and read: the session ended
         }
         log(`cannot read ${file}: ${(e as Error).message}`);
-        scan.unreadable.add(Number(m[1]));
+        hold(Number(m[1]), dir);
       }
     }
   }

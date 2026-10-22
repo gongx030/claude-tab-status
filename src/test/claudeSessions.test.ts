@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { parseSessionFile } from "../claudeSessions";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import * as os from "os";
+import * as path from "path";
+import { parseSessionFile, readSessions } from "../claudeSessions";
 import { formatTerminalTitle, resolveSessionName } from "../titleFormatter";
 
 const noLog = () => {};
@@ -34,4 +37,26 @@ test("name falls back to short id and never carries control characters", () => {
   assert.equal(resolveSessionName({ name: "  ", sessionId: "53a4a993-656f" }), "53a4a993");
   assert.equal(resolveSessionName({ name: "evil\x1b]2;x\x07name", sessionId: "s" }), "evil]2;xname");
   assert.equal(resolveSessionName({ name: "", sessionId: "\x07\x1b]0;xyz-123456" }), "]0;xyz-1");
+});
+
+test("a session file caught mid-write, or a dir that cannot be listed, keeps the previous scan's session", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cts-sessions-"));
+  try {
+    writeFileSync(path.join(dir, "7.json"), JSON.stringify({ ...base, status: "idle" }));
+    const first = await readSessions([dir], noLog);
+    writeFileSync(path.join(dir, "7.json"), '{"pid": 7, "sess');
+    const midWrite = await readSessions([dir], noLog, first);
+    assert.equal(midWrite.sessions.get(7)?.name, "VCC-transfer");
+    assert.deepEqual([...midWrite.unreadable], [7]);
+    // Without a previous read there is nothing to hold.
+    assert.equal((await readSessions([dir], noLog)).sessions.size, 0);
+
+    chmodSync(dir, 0o000);
+    const unlisted = await readSessions([dir], noLog, midWrite);
+    chmodSync(dir, 0o700);
+    assert.equal(unlisted.sessions.get(7)?.name, "VCC-transfer");
+  } finally {
+    chmodSync(dir, 0o700);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
