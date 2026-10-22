@@ -71,21 +71,14 @@ starts in. A conversation is filed under the directory it ran in, so it does
 not follow: Resume continues the name's newest conversation in the new
 directory, else starts a new one. **Forget** removes it from the list.
 
-A stopped row names its tmux session beside the backend (`build · autodev4`)
-when that is not the row's label, since a session is remembered per tmux name
-and two tmux sessions that ran the same Claude session name would otherwise
-render identically. The group also retires itself: every ten minutes the
-extension drops the entries whose directory was deleted (a removed worktree),
-the one case Resume cannot recover from, and logs each one. Deleted is told
-apart from unreachable by device: the extension records which filesystem a
-session's directory is on while it exists, and drops the entry only when the
-directory is missing and its nearest surviving parent is on that same
-filesystem. A directory on a mount that is down, one never seen present (so
-entries remembered before this version), and one with no recorded directory
-(**Change Folder…** repairs it) are all kept. A directory that still exists is
-always resumable, since Resume continues the name's newest conversation there
-or starts one, so **Forget** stays the way to remove a row that is merely
-unwanted.
+Entries are kept per tmux session name, so two tmux sessions that ran the same
+Claude session name are two rows with the same label. A stopped row therefore
+names its tmux session beside the backend when the two differ
+(`build · autodev4`). A row whose directory is not found is marked
+`folder missing`: the directory was deleted (a removed worktree) or is on a
+mount that is down. The mark is checked about once a minute and only marks the
+row; nothing is removed automatically, since **Change Folder…** can still point
+the row at a replacement and the directory may come back. **Forget** removes it.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's

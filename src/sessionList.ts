@@ -114,16 +114,10 @@ export interface KnownSession {
   tmuxName: string;
   /** Last known launcher (recorded or inferred); undefined when it never was known, and Resume asks. */
   launcher?: string;
-  /**
-   * Claude Code session name and id. Resume continues the name's newest
-   * conversation in `cwd`, not this id, which is why a folder that still
-   * exists is always resumable (see `folderDeleted`).
-   */
+  /** Claude Code session name and id; Resume continues the name's newest conversation in `cwd`, not this id. */
   name: string;
   sessionId: string;
   cwd?: string;
-  /** Device `cwd` was on when last seen present; what tells a deleted folder from an unmounted one. */
-  cwdDev?: number;
   /**
    * Host whose tmux server ran it. globalState is shared by every Remote-SSH
    * host the client connects to, and "absent from this host's tmux" says
@@ -134,31 +128,19 @@ export interface KnownSession {
   lastSeen: number;
 }
 
-/**
- * What identifies a remembered session: its tmux session name on its host.
- * Everything that adds, drops or looks one up keys on this, so a session is
- * remembered exactly once however often it runs.
- */
-export function knownKey(k: { host: string; tmuxName: string }): string {
-  return `${k.host}\0${k.tmuxName}`;
-}
-
-/** `known` updated with every running row on `host`, keyed by `knownKey`. */
+/** `known` updated with every running row on `host`, keyed by host and tmux session name. */
 export function rememberRows(known: KnownSession[], rows: SessionRow[], host: string, now: number): KnownSession[] {
-  const key = knownKey;
+  const key = (k: { host: string; tmuxName: string }) => `${k.host}\0${k.tmuxName}`;
   const byName = new Map(known.map((k) => [key(k), k]));
   for (const r of rows) {
     const k = key({ host, tmuxName: r.tmuxName });
-    const prev = byName.get(k);
     byName.set(k, {
       host,
       tmuxName: r.tmuxName,
-      launcher: r.launcher ?? prev?.launcher,
+      launcher: r.launcher ?? byName.get(k)?.launcher,
       name: r.session.name,
       sessionId: r.session.sessionId,
       cwd: r.session.cwd,
-      // A device recorded for another folder says nothing about this one.
-      ...(prev?.cwdDev !== undefined && prev.cwd === r.session.cwd ? { cwdDev: prev.cwdDev } : {}),
       lastSeen: now,
     });
   }
@@ -168,7 +150,7 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], host: st
 /** `known` with the session `tmuxName` on `host` set to resume in `cwd`; undefined if it is not remembered. */
 export function withFolder(known: KnownSession[], host: string, tmuxName: string, cwd: string): KnownSession[] | undefined {
   const hit = (k: KnownSession) => k.host === host && k.tmuxName === tmuxName;
-  return known.some(hit) ? known.map((k) => (hit(k) ? { ...k, cwd, cwdDev: undefined } : k)) : undefined;
+  return known.some(hit) ? known.map((k) => (hit(k) ? { ...k, cwd } : k)) : undefined;
 }
 
 /**
@@ -234,12 +216,18 @@ export function backendLabel(launcher: string | undefined): string {
 }
 
 /**
- * The text beside a Stopped row: its backend, and its tmux session name when
- * that is not the row's label. Two tmux sessions that ran the same Claude
- * session name make two entries — the key is the tmux name — and the label
- * alone renders them identically, so Forget becomes a guess.
+ * The text beside a Stopped row: its backend; its tmux session name when that
+ * is not the label (tmux spells `.` and `:` as `_`), since entries are kept per
+ * tmux name and two that ran one Claude session name otherwise look the same;
+ * and `folder missing` when `missing`, so a dead row is visible before Resume.
  */
-export function stoppedDescription(known: KnownSession): string {
-  const backend = backendLabel(known.launcher);
-  return known.tmuxName === known.name ? backend : `${backend} · ${known.tmuxName}`;
+export function stoppedDescription(known: KnownSession, missing: boolean): string {
+  const parts = [backendLabel(known.launcher)];
+  if (known.tmuxName !== known.name.replace(/[.:]/g, "_")) {
+    parts.push(known.tmuxName);
+  }
+  if (missing) {
+    parts.push("folder missing");
+  }
+  return parts.join(" · ");
 }

@@ -16,9 +16,9 @@ import {
   uniqueSessionName,
 } from "./launcher";
 import { Binding, StatusStore } from "./statusStore";
-import { buildRows, knownKey, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
-import { deviceOf, folderDeleted } from "./resumable";
+import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
+import { folderMissing } from "./folders";
 import { bindTerminals, isSessionProcess, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BACKEND_VAR, BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
@@ -31,8 +31,8 @@ const KNOWN_KEY = "claudeTabStatus.knownSessions";
 const KNOWN_SAVE_MS = 5 * 60_000;
 /** How long Stop waits for Claude Code to exit before offering a forced kill. */
 const STOP_WAIT_MS = 15_000;
-/** How often the Stopped group is swept for entries that can no longer be resumed. */
-const RETIRE_MS = 10 * 60_000;
+/** How often Stopped folders are re-checked for presence. */
+const FOLDER_CHECK_MS = 60_000;
 /** Remembered sessions are per host: see KnownSession.host. */
 const HOST = os.hostname();
 
@@ -46,8 +46,6 @@ function loadKnown(raw: unknown): KnownSession[] {
       (k.launcher === undefined || typeof k.launcher === "string") &&
       typeof k.name === "string" &&
       typeof k.sessionId === "string" &&
-      (k.cwd === undefined || typeof k.cwd === "string") &&
-      (k.cwdDev === undefined || typeof k.cwdDev === "number") &&
       typeof k.host === "string" &&
       typeof k.lastSeen === "number",
   );
@@ -113,60 +111,37 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     );
   }
-  /** When the Stopped group was last swept; 0 until the first sweep, which runs on the first reconcile. */
-  let retiredAt = 0;
+  /** Stopped folders last found absent; marks rows, never removes them. */
+  let missingFolders: ReadonlySet<string> = new Set();
+  let foldersCheckedAt = 0;
+  let foldersChecking = false;
 
   /**
-   * Record the device of each remembered folder on this host that is present
-   * and has none yet, then drop the Stopped entries whose folder was deleted
-   * (`folderDeleted`), so nobody has to Forget a dead row by hand. Every drop
-   * is logged. Runs at most every `RETIRE_MS`, since it stats the filesystem
-   * and the answer changes slowly.
+   * Re-check the Stopped folders' presence, at most every `FOLDER_CHECK_MS`
+   * and never two checks at once: a stat on a hung mount does not return, and
+   * overlapping checks would each pin a thread of the shared libuv pool.
    */
-  async function retireDeleted(stopped: KnownSession[]): Promise<void> {
-    if (Date.now() - retiredAt < RETIRE_MS) {
+  async function checkFolders(stopped: KnownSession[]): Promise<void> {
+    if (foldersChecking || Date.now() - foldersCheckedAt < FOLDER_CHECK_MS) {
       return;
     }
-    retiredAt = Date.now();
-    const exact = (k: KnownSession) => JSON.stringify(k);
-    // A running entry's lastSeen moves ahead of its stored copy between saves;
-    // recording a device for the same folder is safe whatever lastSeen says.
-    const sameFolder = ({ lastSeen: _, ...k }: KnownSession) => JSON.stringify(k);
-    const devices = new Map<string, number>();
-    for (const k of known) {
-      if (k.host === HOST && k.cwd && k.cwdDev === undefined) {
-        const dev = await deviceOf(k.cwd);
-        if (typeof dev === "number") {
-          devices.set(sameFolder(k), dev);
+    foldersChecking = true;
+    try {
+      const cwds = [...new Set(stopped.flatMap((k) => (k.cwd ? [k.cwd] : [])))];
+      const missing = new Set<string>();
+      for (const cwd of cwds) {
+        if (await folderMissing(cwd)) {
+          missing.add(cwd);
         }
       }
-    }
-    const deleted = new Set<string>();
-    for (const k of stopped) {
-      if (await folderDeleted(k)) {
-        deleted.add(exact(k));
+      const changed = missing.size !== missingFolders.size || [...missing].some((c) => !missingFolders.has(c));
+      missingFolders = missing;
+      if (changed) {
+        void reconcile(false);
       }
-    }
-    if (devices.size === 0 && deleted.size === 0) {
-      return;
-    }
-    // Re-read, and act only on records still exactly as examined: a Change
-    // Folder…, a restart or another window's edit since then wins.
-    const dropped: KnownSession[] = [];
-    known = loadKnown(context.globalState.get(KNOWN_KEY)).flatMap((k) => {
-      if (deleted.has(exact(k))) {
-        dropped.push(k);
-        return [];
-      }
-      const dev = devices.get(sameFolder(k));
-      return [dev === undefined ? k : { ...k, cwdDev: dev }];
-    });
-    await saveKnown(true);
-    for (const k of dropped) {
-      log(`forgetting stopped session "${k.name}" (tmux ${k.tmuxName}): its folder ${k.cwd} was deleted`);
-    }
-    if (dropped.length > 0) {
-      void reconcile(false);
+    } finally {
+      foldersCheckedAt = Date.now();
+      foldersChecking = false;
     }
   }
 
@@ -292,9 +267,8 @@ export function activate(context: vscode.ExtensionContext): void {
     known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, HOST, Date.now());
     saveKnown().catch(() => undefined); // logged; retried next reconcile
     const stopped = tmuxSeen ? stoppedSessions(known, tmux, HOST, rows) : [];
-    tree.update(rows, stopped);
-    // Not awaited: the sweep stats the filesystem, and the view must not wait on it.
-    retireDeleted(stopped).catch((e: Error) => log(`cannot retire stopped sessions: ${e.message}`));
+    tree.update(rows, stopped, missingFolders);
+    checkFolders(stopped).catch((e: Error) => log(`cannot check stopped folders: ${e.message}`));
     if (!titles) {
       return;
     }
@@ -897,7 +871,9 @@ export function activate(context: vscode.ExtensionContext): void {
     if (node?.kind !== "stopped") {
       return;
     }
-    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => knownKey(k) !== knownKey(node.known));
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter(
+      (k) => !(k.host === node.known.host && k.tmuxName === node.known.tmuxName),
+    );
     saveKnown(true).then(
       () => void reconcile(false),
       (e: Error) => void vscode.window.showErrorMessage(`Could not forget "${node.known.name}": ${e.message}`),

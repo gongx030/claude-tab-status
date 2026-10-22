@@ -18,17 +18,22 @@ export type SessionNode =
 export class SessionTreeProvider implements vscode.TreeDataProvider<SessionNode> {
   private rows: SessionRow[] = [];
   private stopped: KnownSession[] = [];
+  private missing: ReadonlySet<string> = new Set();
   private shown = "";
   private readonly changed = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changed.event;
 
-  /** Replace the contents; the view redraws only when something it shows changed. */
-  update(rows: SessionRow[], stopped: KnownSession[]): void {
+  /**
+   * Replace the contents; the view redraws only when something it shows
+   * changed. `missing` holds the Stopped folders last found absent.
+   */
+  update(rows: SessionRow[], stopped: KnownSession[], missing: ReadonlySet<string>): void {
     this.rows = rows;
     this.stopped = stopped;
+    this.missing = missing;
     const shown = JSON.stringify([
       rows.map((r) => [r.tmuxId, r.tmuxName, r.launcher, r.unrecorded, r.session.name, r.session.status, r.session.cwd, r.terminals.length]),
-      stopped.map((k) => [k.tmuxName, k.launcher, k.name, k.cwd]),
+      stopped.map((k) => [k.tmuxName, k.launcher, k.name, k.cwd, k.cwd !== undefined && missing.has(k.cwd)]),
     ]);
     if (shown !== this.shown) {
       this.shown = shown;
@@ -71,7 +76,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<SessionNode>
       case "running":
         return runningItem(node.row);
       case "stopped":
-        return stoppedItem(node.known);
+        return stoppedItem(node.known, node.known.cwd !== undefined && this.missing.has(node.known.cwd));
     }
   }
 }
@@ -104,16 +109,17 @@ function runningItem(row: SessionRow): vscode.TreeItem {
   return item;
 }
 
-function stoppedItem(known: KnownSession): vscode.TreeItem {
+function stoppedItem(known: KnownSession, missing: boolean): vscode.TreeItem {
   const item = new vscode.TreeItem(known.name, vscode.TreeItemCollapsibleState.None);
   item.id = `stopped:${known.tmuxName}`;
-  item.description = stoppedDescription(known);
+  item.description = stoppedDescription(known, missing);
   item.iconPath = STOPPED_ICON;
   item.tooltip = [
     known.name,
     `tmux session: ${known.tmuxName} (not running)`,
     `last backend: ${known.launcher ?? "unrecorded"}`,
     ...(known.cwd ? [`directory: ${known.cwd}`] : []),
+    ...(missing ? ["the directory was not found (deleted, or on a mount that is down): Change Folder… or Forget"] : []),
     `last seen: ${new Date(known.lastSeen).toLocaleString()}`,
   ].join("\n");
   item.contextValue = "claudeStopped";

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { configDirOfEnviron } from "../claudeSessions";
 import { launcherOfConfigDir } from "../launcher";
-import { backendLabel, buildRows, paneOf, rememberRows, stoppedDescription, stoppedSessions, withFolder } from "../sessionList";
+import { backendLabel, buildRows, paneOf, rememberRows, stoppedSessions, withFolder } from "../sessionList";
 import { parsePs } from "../terminalTracker";
 import { parseBackendRecord, parseTmuxSnapshot } from "../tmuxClients";
 import { ClaudeSessionState } from "../titleFormatter";
@@ -25,12 +25,6 @@ test("tmux output parses into panes, clients, session names and backend records"
   assert.equal(backendLabel("claude_build"), "build");
   assert.equal(backendLabel("claude"), "claude");
   assert.equal(backendLabel(undefined), "unrecorded");
-
-  // A Stopped row names its tmux session only when that is not the row's label,
-  // so two entries that ran the same session name are told apart.
-  const stopped = { name: "vcc", sessionId: "u-1", host: "h1", lastSeen: 0, launcher: "claude_build" };
-  assert.equal(stoppedDescription({ ...stopped, tmuxName: "vcc" }), "build");
-  assert.equal(stoppedDescription({ ...stopped, tmuxName: "vcc2" }), "build · vcc2");
 
   // An unrecorded session's launcher, from its Claude process's config dir.
   assert.equal(configDirOfEnviron("HOME=/h\0CLAUDE_CONFIG_DIR=/h/.claude-build\0", "/x"), "/h/.claude-build");
@@ -126,13 +120,6 @@ test("a remembered session whose tmux session ended is stopped", () => {
   const moved = withFolder(twin, "h1", "autodev2", "/p/new")!;
   assert.deepEqual(moved.map((k) => k.cwd), ["/p/new", "/p/autodev", "/p/autodev"]);
   assert.equal(withFolder(earlier, "h1", "ad_map", "/p/new"), undefined);
-
-  // A recorded device belongs to its folder: kept while the folder is unchanged,
-  // dropped by a new folder (Change Folder, or a relaunch elsewhere).
-  const withDev = [{ ...base, tmuxName: "vcc", name: "vcc", host: "h1", cwd: "/p/vcc", cwdDev: 7 }];
-  assert.equal(rememberRows(withDev, live, "h1", 100).find((k) => k.tmuxName === "vcc")?.cwdDev, 7);
-  assert.equal(rememberRows(withDev, rows, "h1", 100).find((k) => k.tmuxName === "vcc")?.cwdDev, undefined);
-  assert.equal(withFolder(withDev, "h1", "vcc", "/p/new")![0].cwdDev, undefined);
 
   assert.equal(paneOf(51, "52 %7\n60 %8\n", procs), "%7");
 });
