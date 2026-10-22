@@ -84,6 +84,8 @@ function runningItem(row: SessionRow): vscode.TreeItem {
   // The icon carries the status, so the text names only the backend.
   item.description = row.terminals.length > 1 ? `${backend} · ⚠ open in ${row.terminals.length} tabs` : backend;
   item.iconPath = session.status ? STATUS_ICON[session.status] : new vscode.ThemeIcon("question");
+  // Screen readers do not read the icon, so the status is spoken from here.
+  item.accessibilityInformation = { label: `${session.name}, ${backend}, ${session.status ?? "unknown"}` };
   item.tooltip = [
     session.name,
     `status: ${session.status ?? "unknown"}`,
