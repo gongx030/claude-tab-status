@@ -114,10 +114,16 @@ export interface KnownSession {
   tmuxName: string;
   /** Last known launcher (recorded or inferred); undefined when it never was known, and Resume asks. */
   launcher?: string;
-  /** Claude Code session name and id; Resume continues exactly this conversation id. */
+  /**
+   * Claude Code session name and id. Resume continues the name's newest
+   * conversation in `cwd`, not this id, which is why a folder that still
+   * exists is always resumable (see `folderDeleted`).
+   */
   name: string;
   sessionId: string;
   cwd?: string;
+  /** Device `cwd` was on when last seen present; what tells a deleted folder from an unmounted one. */
+  cwdDev?: number;
   /**
    * Host whose tmux server ran it. globalState is shared by every Remote-SSH
    * host the client connects to, and "absent from this host's tmux" says
@@ -143,13 +149,16 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], host: st
   const byName = new Map(known.map((k) => [key(k), k]));
   for (const r of rows) {
     const k = key({ host, tmuxName: r.tmuxName });
+    const prev = byName.get(k);
     byName.set(k, {
       host,
       tmuxName: r.tmuxName,
-      launcher: r.launcher ?? byName.get(k)?.launcher,
+      launcher: r.launcher ?? prev?.launcher,
       name: r.session.name,
       sessionId: r.session.sessionId,
       cwd: r.session.cwd,
+      // A device recorded for another folder says nothing about this one.
+      ...(prev?.cwdDev !== undefined && prev.cwd === r.session.cwd ? { cwdDev: prev.cwdDev } : {}),
       lastSeen: now,
     });
   }
@@ -159,7 +168,7 @@ export function rememberRows(known: KnownSession[], rows: SessionRow[], host: st
 /** `known` with the session `tmuxName` on `host` set to resume in `cwd`; undefined if it is not remembered. */
 export function withFolder(known: KnownSession[], host: string, tmuxName: string, cwd: string): KnownSession[] | undefined {
   const hit = (k: KnownSession) => k.host === host && k.tmuxName === tmuxName;
-  return known.some(hit) ? known.map((k) => (hit(k) ? { ...k, cwd } : k)) : undefined;
+  return known.some(hit) ? known.map((k) => (hit(k) ? { ...k, cwd, cwdDev: undefined } : k)) : undefined;
 }
 
 /**

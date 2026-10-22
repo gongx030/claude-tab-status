@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { processConfigDir, projectDirs, readSessions, SessionScan, sessionDirs } from "./claudeSessions";
+import { processConfigDir, readSessions, SessionScan, sessionDirs } from "./claudeSessions";
 import {
   Backend,
   backendForRecord,
@@ -17,7 +17,7 @@ import {
 } from "./launcher";
 import { Binding, StatusStore } from "./statusStore";
 import { buildRows, knownKey, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
-import { unresumable, UNRESUMABLE_REASON } from "./resumable";
+import { deviceOf, folderDeleted } from "./resumable";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
 import { bindTerminals, isSessionProcess, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BACKEND_VAR, BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
@@ -46,6 +46,8 @@ function loadKnown(raw: unknown): KnownSession[] {
       (k.launcher === undefined || typeof k.launcher === "string") &&
       typeof k.name === "string" &&
       typeof k.sessionId === "string" &&
+      (k.cwd === undefined || typeof k.cwd === "string") &&
+      (k.cwdDev === undefined || typeof k.cwdDev === "number") &&
       typeof k.host === "string" &&
       typeof k.lastSeen === "number",
   );
@@ -115,48 +117,57 @@ export function activate(context: vscode.ExtensionContext): void {
   let retiredAt = 0;
 
   /**
-   * Drop the Stopped entries that can no longer be resumed (see
-   * `unresumable`), so nobody has to Forget a dead row by hand. Every drop is
-   * logged with its reason. Runs at most every `RETIRE_MS`, since it stats the
-   * filesystem and the answer changes slowly.
+   * Record the device of each remembered folder on this host that is present
+   * and has none yet, then drop the Stopped entries whose folder was deleted
+   * (`folderDeleted`), so nobody has to Forget a dead row by hand. Every drop
+   * is logged. Runs at most every `RETIRE_MS`, since it stats the filesystem
+   * and the answer changes slowly.
    */
-  async function retireUnresumable(stopped: KnownSession[]): Promise<void> {
-    if (stopped.length === 0 || Date.now() - retiredAt < RETIRE_MS) {
+  async function retireDeleted(stopped: KnownSession[]): Promise<void> {
+    if (Date.now() - retiredAt < RETIRE_MS) {
       return;
     }
     retiredAt = Date.now();
-    const dirs = await projectDirs(log);
-    const retired = new Map<string, { sessionId: string; line: string }>();
+    const exact = (k: KnownSession) => JSON.stringify(k);
+    // A running entry's lastSeen moves ahead of its stored copy between saves;
+    // recording a device for the same folder is safe whatever lastSeen says.
+    const sameFolder = ({ lastSeen: _, ...k }: KnownSession) => JSON.stringify(k);
+    const devices = new Map<string, number>();
+    for (const k of known) {
+      if (k.host === HOST && k.cwd && k.cwdDev === undefined) {
+        const dev = await deviceOf(k.cwd);
+        if (typeof dev === "number") {
+          devices.set(sameFolder(k), dev);
+        }
+      }
+    }
+    const deleted = new Set<string>();
     for (const k of stopped) {
-      const why = await unresumable(k, dirs);
-      if (why) {
-        retired.set(knownKey(k), {
-          sessionId: k.sessionId,
-          line: `forgetting stopped session "${k.name}" (tmux ${k.tmuxName}): ${UNRESUMABLE_REASON[why]}`,
-        });
+      if (await folderDeleted(k)) {
+        deleted.add(exact(k));
       }
     }
-    if (retired.size === 0) {
+    if (devices.size === 0 && deleted.size === 0) {
       return;
     }
-    // Re-read: another window may have changed the list since the sweep began,
-    // and a tmux name restarted meanwhile now holds a different conversation,
-    // which the verdict was not about.
-    const dropped: string[] = [];
-    known = loadKnown(context.globalState.get(KNOWN_KEY)).filter((k) => {
-      const hit = retired.get(knownKey(k));
-      if (hit?.sessionId !== k.sessionId) {
-        return true;
+    // Re-read, and act only on records still exactly as examined: a Change
+    // Folder…, a restart or another window's edit since then wins.
+    const dropped: KnownSession[] = [];
+    known = loadKnown(context.globalState.get(KNOWN_KEY)).flatMap((k) => {
+      if (deleted.has(exact(k))) {
+        dropped.push(k);
+        return [];
       }
-      dropped.push(hit.line);
-      return false;
+      const dev = devices.get(sameFolder(k));
+      return [dev === undefined ? k : { ...k, cwdDev: dev }];
     });
-    if (dropped.length === 0) {
-      return;
-    }
     await saveKnown(true);
-    dropped.forEach((line) => log(line));
-    void reconcile(false);
+    for (const k of dropped) {
+      log(`forgetting stopped session "${k.name}" (tmux ${k.tmuxName}): its folder ${k.cwd} was deleted`);
+    }
+    if (dropped.length > 0) {
+      void reconcile(false);
+    }
   }
 
   /** Whether any tmux snapshot has succeeded: until one has, "no tmux session" proves nothing about Stopped. */
@@ -283,7 +294,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const stopped = tmuxSeen ? stoppedSessions(known, tmux, HOST, rows) : [];
     tree.update(rows, stopped);
     // Not awaited: the sweep stats the filesystem, and the view must not wait on it.
-    retireUnresumable(stopped).catch((e: Error) => log(`cannot retire stopped sessions: ${e.message}`));
+    retireDeleted(stopped).catch((e: Error) => log(`cannot retire stopped sessions: ${e.message}`));
     if (!titles) {
       return;
     }

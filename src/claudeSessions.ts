@@ -15,12 +15,12 @@ function isAbsent(e: unknown): boolean {
 }
 
 /**
- * `<config>/<sub>` for `~/.claude` and each `~/.claude-*` config dir (one per
- * launcher backend), plus `$CLAUDE_CONFIG_DIR`. Directories that are the same
- * on disk (backends often symlink `sessions/` to `~/.claude/sessions`) are
- * listed once.
+ * Every Claude Code session directory: `<config>/sessions` for `~/.claude` and
+ * each `~/.claude-*` config dir (one per launcher backend), plus
+ * `$CLAUDE_CONFIG_DIR`. Directories that are the same on disk (backends often
+ * symlink `sessions/` to `~/.claude/sessions`) are listed once.
  */
-async function configSubdirs(sub: string, log: Log, home: string): Promise<string[]> {
+export async function sessionDirs(log: Log, home: string = os.homedir()): Promise<string[]> {
   const configs = new Set<string>();
   if (process.env.CLAUDE_CONFIG_DIR) {
     configs.add(process.env.CLAUDE_CONFIG_DIR);
@@ -37,7 +37,7 @@ async function configSubdirs(sub: string, log: Log, home: string): Promise<strin
   const seen = new Set<string>();
   const dirs: string[] = [];
   for (const config of configs) {
-    const dir = path.join(config, sub);
+    const dir = path.join(config, "sessions");
     try {
       const st = await fsp.stat(dir);
       const key = `${st.dev}:${st.ino}`;
@@ -51,26 +51,10 @@ async function configSubdirs(sub: string, log: Log, home: string): Promise<strin
       }
     }
   }
-  return dirs;
-}
-
-/** Every Claude Code session directory; see `configSubdirs`. */
-export async function sessionDirs(log: Log, home: string = os.homedir()): Promise<string[]> {
-  const dirs = await configSubdirs("sessions", log, home);
   if (dirs.length === 0) {
     log(`no Claude Code session directories found under ${home}`);
   }
   return dirs;
-}
-
-/**
- * Every Claude Code transcript directory, `<config>/projects`, each holding
- * one directory per working folder. Absent ones are not reported: a backend
- * that has never run has no transcripts, and `unresumable` reads a short list
- * as "no evidence" rather than as "nothing is resumable".
- */
-export async function projectDirs(log: Log, home: string = os.homedir()): Promise<string[]> {
-  return configSubdirs("projects", log, home);
 }
 interface RawSession {
   pid?: unknown;

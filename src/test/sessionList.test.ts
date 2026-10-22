@@ -127,5 +127,12 @@ test("a remembered session whose tmux session ended is stopped", () => {
   assert.deepEqual(moved.map((k) => k.cwd), ["/p/new", "/p/autodev", "/p/autodev"]);
   assert.equal(withFolder(earlier, "h1", "ad_map", "/p/new"), undefined);
 
+  // A recorded device belongs to its folder: kept while the folder is unchanged,
+  // dropped by a new folder (Change Folder, or a relaunch elsewhere).
+  const withDev = [{ ...base, tmuxName: "vcc", name: "vcc", host: "h1", cwd: "/p/vcc", cwdDev: 7 }];
+  assert.equal(rememberRows(withDev, live, "h1", 100).find((k) => k.tmuxName === "vcc")?.cwdDev, 7);
+  assert.equal(rememberRows(withDev, rows, "h1", 100).find((k) => k.tmuxName === "vcc")?.cwdDev, undefined);
+  assert.equal(withFolder(withDev, "h1", "vcc", "/p/new")![0].cwdDev, undefined);
+
   assert.equal(paneOf(51, "52 %7\n60 %8\n", procs), "%7");
 });

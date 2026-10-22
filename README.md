@@ -75,14 +75,17 @@ A stopped row names its tmux session beside the backend (`build · autodev4`)
 when that is not the row's label, since a session is remembered per tmux name
 and two tmux sessions that ran the same Claude session name would otherwise
 render identically. The group also retires itself: every ten minutes the
-extension drops the entries Resume could only start afresh — their directory
-is gone while its parent remains (a deleted worktree), or the directory holds
-no conversation at all — and logs each one with its reason. An entry is kept
-whenever the evidence is inconclusive: a directory whose parent is missing too
-(as under a mount that is down), one with no recorded directory (**Change
-Folder…** repairs it), or one holding other conversations, since Resume
-continues the name's newest. **Forget** stays the way to remove one that is
-merely unwanted.
+extension drops the entries whose directory was deleted (a removed worktree),
+the one case Resume cannot recover from, and logs each one. Deleted is told
+apart from unreachable by device: the extension records which filesystem a
+session's directory is on while it exists, and drops the entry only when the
+directory is missing and its nearest surviving parent is on that same
+filesystem. A directory on a mount that is down, one never seen present (so
+entries remembered before this version), and one with no recorded directory
+(**Change Folder…** repairs it) are all kept. A directory that still exists is
+always resumable, since Resume continues the name's newest conversation there
+or starts one, so **Forget** stays the way to remove a row that is merely
+unwanted.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's
