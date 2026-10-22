@@ -114,7 +114,7 @@ export interface KnownSession {
   tmuxName: string;
   /** Last known launcher (recorded or inferred); undefined when it never was known, and Resume asks. */
   launcher?: string;
-  /** Claude Code session name and id; Resume continues exactly this conversation id. */
+  /** Claude Code session name and id; Resume continues the name's newest conversation in `cwd`, not this id. */
   name: string;
   sessionId: string;
   cwd?: string;
@@ -213,4 +213,21 @@ export function backendLabel(launcher: string | undefined): string {
     return "unrecorded";
   }
   return launcher.startsWith("claude_") ? launcher.slice("claude_".length) : launcher;
+}
+
+/**
+ * The text beside a Stopped row: its backend; its tmux session name when that
+ * is not the label (tmux spells `.` and `:` as `_`), since entries are kept per
+ * tmux name and two that ran one Claude session name otherwise look the same;
+ * and `folder missing` when `missing`, so a dead row is visible before Resume.
+ */
+export function stoppedDescription(known: KnownSession, missing: boolean): string {
+  const parts = [backendLabel(known.launcher)];
+  if (known.tmuxName !== known.name.replace(/[.:]/g, "_")) {
+    parts.push(known.tmuxName);
+  }
+  if (missing) {
+    parts.push("folder missing");
+  }
+  return parts.join(" · ");
 }
