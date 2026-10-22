@@ -113,7 +113,8 @@ export interface SessionScan {
   sessions: Map<number, ClaudeSessionState>;
   /**
    * Pids whose file exists but could not be read this time; their titles are
-   * held, not reset, and their session from the previous scan is kept.
+   * held, not reset, and their session from the previous scan is kept for
+   * one poll.
    */
   unreadable: Set<number>;
   /** Claude pid -> the sessions dir its file was read from. */
@@ -123,13 +124,15 @@ export interface SessionScan {
 /**
  * Read every session file in `dirs`. A file that cannot be read this time
  * (caught mid-write), or a dir that cannot be listed, keeps the session
- * `previous` read from it, so a live session never drops out for one poll.
+ * `previous` read from it for one poll, so a write in progress does not drop
+ * a live row. A session already held in `previous` is not held again: one
+ * that stays unreadable drops out on the next poll.
  */
 export async function readSessions(dirs: string[], log: Log, previous?: SessionScan): Promise<SessionScan> {
   const scan: SessionScan = { sessions: new Map(), unreadable: new Set(), dirOf: new Map() };
   const hold = (pid: number, dir: string) => {
     scan.unreadable.add(pid);
-    const last = previous?.sessions.get(pid);
+    const last = previous?.unreadable.has(pid) ? undefined : previous?.sessions.get(pid);
     if (last && !scan.sessions.has(pid)) {
       scan.sessions.set(pid, last);
       scan.dirOf.set(pid, dir);

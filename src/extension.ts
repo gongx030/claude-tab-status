@@ -18,7 +18,7 @@ import {
 import { Binding, StatusStore } from "./statusStore";
 import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
-import { bindTerminals, ProcTable, snapshotProcesses } from "./terminalTracker";
+import { bindTerminals, isSessionProcess, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BACKEND_VAR, BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
 
@@ -79,6 +79,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const inferredCache = new Map<number, { startMs?: number; launcher?: string }>();
   /** Claude pids whose omission from the list was logged; each is logged once, not every reconcile. */
   const omissionsLogged = new Set<number>();
+  /** tmux session id -> the unrecorded-launcher line last logged for it; logged again only when it changes. */
+  const unrecordedLogged = new Map<string, string>();
   const tree = new SessionTreeProvider();
   /** Terminals this extension opened per tmux session id, until their shell pid shows up as a client (pruned in reconcileOnce). */
   const opened = new Map<string, vscode.Terminal>();
@@ -204,14 +206,24 @@ export function activate(context: vscode.ExtensionContext): void {
         log(`Claude pid ${pid} in tmux session ${tmux.sessions.get(tmuxId) ?? tmuxId} is not listed: ${reason}`);
       }
     });
+    const unrecordedIds = new Set(rows.filter((r) => r.unrecorded).map((r) => r.tmuxId));
+    for (const id of unrecordedLogged.keys()) {
+      if (!unrecordedIds.has(id)) {
+        unrecordedLogged.delete(id);
+      }
+    }
     for (const r of rows) {
-      if (r.unrecorded) {
-        log(
-          `tmux session ${r.tmuxName} has no ${BACKEND_VAR} record; ` +
-            (r.launcher !== undefined
-              ? `launcher ${r.launcher} inferred from the config dir of Claude pid ${r.session.pid}`
-              : `no launcher can be inferred from the config dir of Claude pid ${r.session.pid}`),
-        );
+      if (!r.unrecorded) {
+        continue;
+      }
+      const line =
+        `tmux session ${r.tmuxName} has no ${BACKEND_VAR} record; ` +
+        (r.launcher !== undefined
+          ? `launcher ${r.launcher} inferred from the config dir of Claude pid ${r.session.pid}`
+          : `no launcher can be inferred from the config dir of Claude pid ${r.session.pid}`);
+      if (unrecordedLogged.get(r.tmuxId) !== line) {
+        unrecordedLogged.set(r.tmuxId, line);
+        log(line);
       }
     }
     // Re-read: another window may have forgotten an entry since.
@@ -467,11 +479,13 @@ export function activate(context: vscode.ExtensionContext): void {
    * half-typed prompt so the command is not appended to it.
    */
   async function typeCommand(row: SessionRow, command: string): Promise<void> {
-    const pane = paneOf(
-      row.session.pid,
-      (await runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id} #{pane_tty}"])) ?? "",
-      procs ?? new Map(),
-    );
+    // Fresh, and checked against the session: keys must never go to a pane
+    // that took over the pid or tty of a Claude that has since died.
+    const [panes, fresh] = await Promise.all([
+      runTmux(["list-panes", "-s", "-t", row.tmuxId, "-F", "#{pane_pid} #{pane_id} #{pane_tty}"]),
+      snapshotProcesses(),
+    ]);
+    const pane = isSessionProcess(row.session, fresh) ? paneOf(row.session.pid, panes ?? "", fresh) : undefined;
     if (!pane) {
       throw new Error(`no pane of tmux session ${row.tmuxName} runs Claude pid ${row.session.pid}`);
     }

@@ -48,13 +48,17 @@ test("a session file caught mid-write, or a dir that cannot be listed, keeps the
     const midWrite = await readSessions([dir], noLog, first);
     assert.equal(midWrite.sessions.get(7)?.name, "VCC-transfer");
     assert.deepEqual([...midWrite.unreadable], [7]);
-    // Without a previous read there is nothing to hold.
+    // Held for one poll only, and without a previous read there is nothing to hold.
+    assert.equal((await readSessions([dir], noLog, midWrite)).sessions.size, 0);
     assert.equal((await readSessions([dir], noLog)).sessions.size, 0);
 
-    chmodSync(dir, 0o000);
-    const unlisted = await readSessions([dir], noLog, midWrite);
-    chmodSync(dir, 0o700);
-    assert.equal(unlisted.sessions.get(7)?.name, "VCC-transfer");
+    // root lists a mode-000 dir anyway.
+    if (process.getuid?.() !== 0) {
+      chmodSync(dir, 0o000);
+      const unlisted = await readSessions([dir], noLog, first);
+      chmodSync(dir, 0o700);
+      assert.equal(unlisted.sessions.get(7)?.name, "VCC-transfer");
+    }
   } finally {
     chmodSync(dir, 0o700);
     rmSync(dir, { recursive: true, force: true });
