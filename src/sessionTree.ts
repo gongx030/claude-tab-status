@@ -33,12 +33,17 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<SessionNode>
     this.missing = missing;
     const shown = JSON.stringify([
       rows.map((r) => [r.tmuxId, r.tmuxName, r.launcher, r.unrecorded, r.session.name, r.session.status, r.session.cwd, r.terminals.length]),
-      stopped.map((k) => [k.tmuxName, k.launcher, k.name, k.cwd, k.cwd !== undefined && missing.has(k.cwd)]),
+      stopped.map((k) => [k.tmuxName, k.launcher, k.name, k.cwd, this.isMissing(k)]),
     ]);
     if (shown !== this.shown) {
       this.shown = shown;
       this.changed.fire();
     }
+  }
+
+  /** Whether `k`'s folder was last found absent; the redraw key and the row both read this. */
+  private isMissing(k: KnownSession): boolean {
+    return k.cwd !== undefined && this.missing.has(k.cwd);
   }
 
   row(tmuxId: string): SessionRow | undefined {
@@ -76,7 +81,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<SessionNode>
       case "running":
         return runningItem(node.row);
       case "stopped":
-        return stoppedItem(node.known, node.known.cwd !== undefined && this.missing.has(node.known.cwd));
+        return stoppedItem(node.known, this.isMissing(node.known));
     }
   }
 }
@@ -119,7 +124,7 @@ function stoppedItem(known: KnownSession, missing: boolean): vscode.TreeItem {
     `tmux session: ${known.tmuxName} (not running)`,
     `last backend: ${known.launcher ?? "unrecorded"}`,
     ...(known.cwd ? [`directory: ${known.cwd}`] : []),
-    ...(missing ? ["the directory was not found (deleted, or on a mount that is down): Change Folder… or Forget"] : []),
+    ...(missing ? ["the directory was not found (deleted, or an automount that is gone): Change Folder… or Forget"] : []),
     `last seen: ${new Date(known.lastSeen).toLocaleString()}`,
   ].join("\n");
   item.contextValue = "claudeStopped";

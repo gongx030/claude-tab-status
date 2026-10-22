@@ -18,7 +18,7 @@ import {
 import { Binding, StatusStore } from "./statusStore";
 import { buildRows, KnownSession, paneOf, rememberRows, SessionRow, stoppedSessions, withFolder } from "./sessionList";
 import { SessionNode, SessionTreeProvider } from "./sessionTree";
-import { folderMissing } from "./folders";
+import { folderMissingWithin } from "./folders";
 import { bindTerminals, isSessionProcess, ProcTable, snapshotProcesses } from "./terminalTracker";
 import { BACKEND_VAR, BackendRecords, EMPTY_TMUX, snapshotTmux, tmux as runTmux, TmuxSnapshot } from "./tmuxClients";
 import { writeTitle } from "./ttyTitle";
@@ -33,6 +33,8 @@ const KNOWN_SAVE_MS = 5 * 60_000;
 const STOP_WAIT_MS = 15_000;
 /** How often Stopped folders are re-checked for presence. */
 const FOLDER_CHECK_MS = 60_000;
+/** How long one folder's presence check may take before its previous mark stands. */
+const FOLDER_STAT_MS = 5_000;
 /** Remembered sessions are per host: see KnownSession.host. */
 const HOST = os.hostname();
 
@@ -114,28 +116,28 @@ export function activate(context: vscode.ExtensionContext): void {
   /** Stopped folders last found absent; marks rows, never removes them. */
   let missingFolders: ReadonlySet<string> = new Set();
   let foldersCheckedAt = 0;
+  let foldersChecked = "";
   let foldersChecking = false;
 
   /**
-   * Re-check the Stopped folders' presence, at most every `FOLDER_CHECK_MS`
-   * and never two checks at once: a stat on a hung mount does not return, and
-   * overlapping checks would each pin a thread of the shared libuv pool.
+   * Re-check the Stopped folders' presence every `FOLDER_CHECK_MS`, or at once
+   * when the set of folders changed (a Change Folder…, a session stopping).
+   * Folders are checked in parallel, each bounded by `FOLDER_STAT_MS`; one
+   * that does not answer keeps its previous mark (see folderMissingWithin).
    */
   async function checkFolders(stopped: KnownSession[]): Promise<void> {
-    if (foldersChecking || Date.now() - foldersCheckedAt < FOLDER_CHECK_MS) {
+    const cwds = [...new Set(stopped.flatMap((k) => (k.cwd ? [k.cwd] : [])))].sort();
+    const key = JSON.stringify(cwds);
+    if (foldersChecking || (key === foldersChecked && Date.now() - foldersCheckedAt < FOLDER_CHECK_MS)) {
       return;
     }
     foldersChecking = true;
     try {
-      const cwds = [...new Set(stopped.flatMap((k) => (k.cwd ? [k.cwd] : [])))];
-      const missing = new Set<string>();
-      for (const cwd of cwds) {
-        if (await folderMissing(cwd)) {
-          missing.add(cwd);
-        }
-      }
+      const answers = await Promise.all(cwds.map((cwd) => folderMissingWithin(cwd, FOLDER_STAT_MS)));
+      const missing = new Set(cwds.filter((cwd, i) => answers[i] ?? missingFolders.has(cwd)));
       const changed = missing.size !== missingFolders.size || [...missing].some((c) => !missingFolders.has(c));
       missingFolders = missing;
+      foldersChecked = key;
       if (changed) {
         void reconcile(false);
       }
@@ -779,6 +781,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     if (invalidSessionName(k.name)) {
       void vscode.window.showErrorMessage(`"${k.name}" cannot be resumed by name; ${manual}.`);
+      return;
+    }
+    // A launch in an absent folder fails or silently starts elsewhere. A check
+    // that does not answer in time is not evidence, and the launch goes ahead.
+    if (await folderMissingWithin(k.cwd, FOLDER_STAT_MS)) {
+      void vscode.window.showErrorMessage(`"${k.name}": ${k.cwd} was not found. Use Change Folder… to resume it elsewhere.`);
       return;
     }
     if (!backend) {

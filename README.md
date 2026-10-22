@@ -75,10 +75,15 @@ Entries are kept per tmux session name, so two tmux sessions that ran the same
 Claude session name are two rows with the same label. A stopped row therefore
 names its tmux session beside the backend when the two differ
 (`build · autodev4`). A row whose directory is not found is marked
-`folder missing`: the directory was deleted (a removed worktree) or is on a
-mount that is down. The mark is checked about once a minute and only marks the
-row; nothing is removed automatically, since **Change Folder…** can still point
-the row at a replacement and the directory may come back. **Forget** removes it.
+`folder missing`: the path does not exist, because the directory was deleted
+(a removed worktree) or sits under an automount that is gone. A directory on
+a mount that hangs or reports an I/O error is not marked; its check gives up
+after 5 s and the row keeps its previous mark. The mark is refreshed about
+once a minute, and at once when a row's directory changes. It only marks the
+row: nothing is removed automatically, since **Change Folder…** can still
+point the row at a replacement and the directory may come back. Resume
+refuses a row whose directory is missing and points to **Change Folder…**.
+**Forget** removes the row.
 
 The backend is the tmux session-environment variable `CC_BACKEND` (`claude`,
 `claude_build`, ...), written at session creation by unified-agent-sdk's
