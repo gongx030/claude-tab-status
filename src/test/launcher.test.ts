@@ -29,7 +29,8 @@ test("a new session gets a name the launcher accepts and a command that holds a 
   assert.equal(invalidSessionName("autodev2"), undefined);
   assert.equal(
     launchCommand("/bin/ual", "claude-build", "it's", "/p/x"),
-    `'/bin/ual' 'claude-build' '--session' 'it'\\''s' '--cwd' '/p/x' || { rc=$?; echo; ` +
+    `'/bin/ual' 'claude-build' '--session' 'it'\\''s' '--cwd' '/p/x' '--detach' ` +
+      `&& exec 'tmux' 'attach-session' '-d' '-t' '=it'\\''s' || { rc=$?; echo; ` +
       `if [ $rc -eq 3 ]; then echo "Refused; nothing was started."; else echo "Failed (exit $rc)."; fi; ` +
       `read -rp "Enter to close " _; }`,
   );
