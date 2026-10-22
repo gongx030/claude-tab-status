@@ -110,11 +110,18 @@ function q(s: string): string {
  * on stderr above, can be read. Exit 3 is a refusal that started nothing
  * (backend or folder mismatch, conversation already live); anything else is
  * a usage error or missing tmux.
+ *
+ * The launcher only creates the session (`--detach`); bash then becomes the
+ * tmux client with `exec`. A shell left as the client's parent makes VS Code
+ * ask "terminate running processes?" when the tab is closed, which a tab from
+ * Open in Terminal (tmux as the shell process) does not.
  */
 export function launchCommand(bin: string, backend: string, name: string, cwd: string): string {
-  const argv = [bin, backend, "--session", name, "--cwd", cwd].map(q).join(" ");
+  const argv = [bin, backend, "--session", name, "--cwd", cwd, "--detach"].map(q).join(" ");
+  // -d takes the session from any other client, as the launcher's own attach does.
+  const attach = ["tmux", "attach-session", "-d", "-t", `=${name}`].map(q).join(" ");
   return (
-    `${argv} || { rc=$?; echo; ` +
+    `${argv} && exec ${attach} || { rc=$?; echo; ` +
     `if [ $rc -eq 3 ]; then echo "Refused; nothing was started."; else echo "Failed (exit $rc)."; fi; ` +
     `read -rp "Enter to close " _; }`
   );

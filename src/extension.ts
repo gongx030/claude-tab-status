@@ -186,7 +186,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Re-read: another window may have forgotten an entry since.
     known = rememberRows(loadKnown(context.globalState.get(KNOWN_KEY)), rows, HOST, Date.now());
     saveKnown().catch(() => undefined); // logged; retried next reconcile
-    tree.update(rows, tmuxSeen ? stoppedSessions(known, tmux, HOST) : []);
+    tree.update(rows, tmuxSeen ? stoppedSessions(known, tmux, HOST, rows) : []);
     if (!titles) {
       return;
     }
