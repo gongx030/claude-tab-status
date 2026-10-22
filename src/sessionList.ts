@@ -121,7 +121,7 @@ export function withFolder(known: KnownSession[], host: string, tmuxName: string
 export function stoppedSessions(known: KnownSession[], tmux: TmuxSnapshot, host: string, rows: SessionRow[]): KnownSession[] {
   const alive = new Set(tmux.sessions.values());
   const running = (k: KnownSession) =>
-    rows.some((r) => r.session.sessionId === k.sessionId || (r.session.name === k.name && r.session.cwd === k.cwd));
+    rows.some((r) => r.session.sessionId === k.sessionId || (k.cwd !== undefined && r.session.name === k.name && r.session.cwd === k.cwd));
   return known.filter((k) => k.host === host && !alive.has(k.tmuxName) && !running(k));
 }
 
