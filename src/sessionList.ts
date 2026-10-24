@@ -31,8 +31,11 @@ const MAX_DEPTH = 64;
  * the launcher of a tmux session without a `CC_BACKEND` record.
  *
  * With several Claude sessions in one tmux session, the most recently
- * updated one names the row. A session file whose pid runs in a pane but
- * fails the liveness check is reported to `omit`.
+ * updated one names the row, except that a session started by another live
+ * session (`claude -p`, an SDK query) never does: it shares its parent's
+ * pane, and would otherwise hide the session the pane belongs to. A session
+ * file whose pid runs in a pane but fails the liveness check is reported to
+ * `omit`.
  */
 export function buildRows(
   sessions: Iterable<ClaudeSessionState>,
@@ -43,7 +46,7 @@ export function buildRows(
   inferred: Map<number, string> = new Map(),
   omit: Omission = () => undefined,
 ): SessionRow[] {
-  const byTmux = new Map<string, ClaudeSessionState>();
+  const live: [string, ClaudeSessionState][] = [];
   for (const session of sessions) {
     const tmuxId = tmuxSessionOf(session.pid, procs, tmux);
     if (tmuxId === undefined) {
@@ -59,6 +62,15 @@ export function buildRows(
           : `its process started at ${new Date(startMs).toISOString()}, after its session file's startedAt ` +
               `${new Date(session.startedAt).toISOString()} (a recycled pid, or clock skew)`,
       );
+      continue;
+    }
+    live.push([tmuxId, session]);
+  }
+  const livePids = new Set(live.map(([, s]) => s.pid));
+  const byTmux = new Map<string, ClaudeSessionState>();
+  for (const [tmuxId, session] of live) {
+    const parent = procs.get(session.pid)?.ppid;
+    if (parent !== undefined && selfOrAncestor(parent, procs, (pid) => livePids.has(pid)) !== undefined) {
       continue;
     }
     const current = byTmux.get(tmuxId);

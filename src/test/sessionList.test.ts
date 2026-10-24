@@ -87,6 +87,18 @@ test("a Claude reparented away from its pane is found by its tty; one in a pane 
   assert.equal(paneOf(51, "52 %7 /dev/pts/9\n", procs), "%7");
 });
 
+test("a Claude started by another live Claude never names the row, however recently it updated (#26)", () => {
+  // pane 52 ($1) -> claude 51 -> sh 80 -> claude -p 81 (busier, so newer updatedAt)
+  const e = new Date(T0).toString().slice(0, 24);
+  const procs = parsePs([`50 1 ? ${e}`, `52 50 pts/9 ${e}`, `51 52 pts/9 ${e}`, `80 51 ? ${e}`, `81 80 ? ${e}`].join("\n"));
+  const tmux = parseTmuxSnapshot("52 $1\n", "", "$1\tunified-agent-sdk\n");
+  const nested = { ...session(81, "cwd-81"), updatedAt: 9 };
+
+  const rows = buildRows([session(51, "unified-agent-sdk"), nested], procs, tmux, new Map(), new Set());
+
+  assert.deepEqual(rows.map((r) => [r.tmuxName, r.session.name]), [["unified-agent-sdk", "unified-agent-sdk"]]);
+});
+
 test("a remembered session whose tmux session ended is stopped", () => {
   const e = new Date(T0).toString().slice(0, 24);
   const procs = parsePs([`50 1 ? ${e}`, `52 50 pts/9 ${e}`, `51 52 pts/9 ${e}`].join("\n"));
